@@ -12,6 +12,7 @@ export interface Drink {
     price: number; // resolved from colors
     stock: number;
     min_stock: number;
+    is_active: boolean;
 }
 
 export interface Color {
@@ -40,10 +41,16 @@ export interface AdminTally {
     totalSpent: number;
 }
 
-export interface ScanEvent {
+export type ScanEvent = {
+    type: 'known';
+    id: number;
     barcode: string;
     name: string;
     color_name: string;
     price: number;
     timestamp: string;
-}
+} | {
+    type: 'unknown';
+    barcode: string;
+    timestamp: string;
+};

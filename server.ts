@@ -38,7 +38,8 @@ db.exec(`
                                           color_name TEXT DEFAULT 'Rot',
                                           price REAL NOT NULL DEFAULT 0,
                                           stock INTEGER NOT NULL DEFAULT 10,
-                                          min_stock INTEGER NOT NULL DEFAULT 5
+                                          min_stock INTEGER NOT NULL DEFAULT 5,
+                                          is_active BOOLEAN DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS consumption_log (
@@ -54,6 +55,7 @@ db.exec(`
 try { db.exec('ALTER TABLE drinks ADD COLUMN stock INTEGER NOT NULL DEFAULT 10'); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN min_stock INTEGER NOT NULL DEFAULT 5'); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN color_name TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE drinks ADD COLUMN is_active BOOLEAN DEFAULT 1'); } catch (e) {}
 
 const colorCount = db.prepare('SELECT COUNT(*) as c FROM colors').get() as {c: number};
 if (colorCount.c === 0) {
@@ -234,6 +236,7 @@ app.post('/api/guest-checkout', (req, res) => {
 
 app.post('/api/scan', (req, res) => {
     const { barcode } = req.body;
+    console.log('Received scan:', barcode);
     const drink = db.prepare(`
         SELECT d.*, c.price
         FROM drinks d
@@ -241,10 +244,13 @@ app.post('/api/scan', (req, res) => {
         WHERE d.barcode = ?
     `).get(barcode) as any;
     if (drink) {
-        scanEmitter.emit('scan', { ...drink, timestamp: new Date().toISOString() });
+        console.log('Found drink:', drink.name);
+        scanEmitter.emit('scan', { ...drink, type: 'known', timestamp: new Date().toISOString() });
         res.json({ success: true, drink });
     } else {
-        res.status(404).json({ error: 'Drink not found' });
+        console.log('Unknown barcode:', barcode);
+        scanEmitter.emit('scan', { type: 'unknown', barcode, timestamp: new Date().toISOString() });
+        res.status(404).json({ error: 'Drink not found', barcode });
     }
 });
 
@@ -360,7 +366,7 @@ app.put('/api/admin/colors/:name', authenticateToken, isAdmin, (req, res) => {
 
 app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
     const { id } = req.params;
-    const { color_name, stock } = req.body;
+    const { color_name, stock, is_active } = req.body;
     try {
         let query = 'UPDATE drinks SET ';
         const params: any[] = [];
@@ -372,6 +378,11 @@ app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
             if (params.length > 0) query += ', ';
             query += 'stock = ?';
             params.push(Number(stock));
+        }
+        if (is_active !== undefined) {
+            if (params.length > 0) query += ', ';
+            query += 'is_active = ?';
+            params.push(is_active ? 1 : 0);
         }
         if (params.length === 0) return res.json({ success: true });
 
@@ -385,18 +396,30 @@ app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
     }
 });
 
+app.delete('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
+    const { id } = req.params;
+    try {
+        db.prepare('DELETE FROM drinks WHERE id = ?').run(Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Database delete failed' });
+    }
+});
+
 app.post('/api/admin/drinks', authenticateToken, isAdmin, (req, res) => {
     const { name, color_name, stock, barcode } = req.body;
     try {
-        const result = db.prepare('INSERT INTO drinks (barcode, name, color_name, stock) VALUES (?, ?, ?, ?)').run(
+        const result = db.prepare('INSERT INTO drinks (barcode, name, color_name, stock, price) VALUES (?, ?, ?, ?, ?)').run(
             barcode || String(Date.now()),
             name,
             color_name || 'Rot',
-            Number(stock || 0)
+            Number(stock || 0),
+            0
         );
         res.json({ success: true, id: result.lastInsertRowid });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to create drink' });
+    } catch (err: any) {
+        console.error('Drinks Create Error:', err);
+        res.status(500).json({ error: err.message || 'Failed to create drink' });
     }
 });
 
