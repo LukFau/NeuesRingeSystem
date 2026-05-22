@@ -47,7 +47,7 @@ export default function Login() {
               value={username}
               onChange={e => setUsername(e.target.value)}
               className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all font-mono"
-              placeholder="e.g. jdoe"
+              placeholder="Phritte"
               required
             />
           </div>
@@ -58,7 +58,7 @@ export default function Login() {
               value={password}
               onChange={e => setPassword(e.target.value)}
               className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all font-mono"
-              placeholder="••••"
+              placeholder="1234"
               required
             />
           </div>

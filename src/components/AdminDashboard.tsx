@@ -225,69 +225,86 @@ export default function AdminDashboard() {
 
             <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
                 <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Drink Inventory & Binding</h2>
-                <div className="space-y-3">
-                    {drinks.map(d => (
-                        <div key={d.id} className={`flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3 border-l-4 ${!d.is_active ? 'opacity-50 grayscale' : ''}`} style={{borderLeftColor: uiColors[d.color_name] || '#333'}}>
-                            <div className="font-medium flex items-center gap-2">
-                                {!!d.is_active && d.stock <= d.min_stock && <AlertTriangle className="w-4 h-4 text-red-500" />}
-                                {d.name} <span className="text-zinc-500 font-mono text-xs ml-2">({d.barcode})</span>
-                                {!d.is_active && <span className="text-[10px] bg-red-900/50 text-red-400 px-2 py-0.5 rounded-full ml-2 uppercase font-bold tracking-widest">Inactive</span>}
+                <div className="space-y-6">
+                    {(() => {
+                        const grouped = colors.map(c => ({
+                            ...c,
+                            drinks: drinks.filter(d => d.color_name === c.name)
+                        }));
+                        const unassigned = drinks.filter(d => !colors.some(c => c.name === d.color_name));
+                        if (unassigned.length > 0) grouped.push({ name: 'Unassigned', price: 0, drinks: unassigned });
+
+                        return grouped.map(group => group.drinks.length > 0 && (
+                            <div key={group.name} className="space-y-3">
+                                <h3 className="text-zinc-500 text-[11px] font-bold uppercase tracking-widest flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: uiColors[group.name] || '#333' }}></div>
+                                    {group.name} <span className="text-zinc-600">({group.drinks.length})</span>
+                                </h3>
+                                {group.drinks.map(d => (
+                                    <div key={d.id} className={`flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3 border-l-4 ${!d.is_active ? 'opacity-50 grayscale' : ''}`} style={{borderLeftColor: uiColors[d.color_name] || '#333'}}>
+                                        <div className="font-medium flex items-center gap-2">
+                                            {!!d.is_active && d.stock <= d.min_stock && <AlertTriangle className="w-4 h-4 text-red-500" />}
+                                            {d.name} <span className="text-zinc-500 font-mono text-xs ml-2">({d.barcode})</span>
+                                            {!d.is_active && <span className="text-[10px] bg-red-900/50 text-red-400 px-2 py-0.5 rounded-full ml-2 uppercase font-bold tracking-widest">Inactive</span>}
+                                        </div>
+                                        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                                            <div className="flex items-center gap-2 text-xs">
+                                                <span className="text-zinc-500 uppercase">Color:</span>
+                                                <select
+                                                    value={draftDrinkColors[d.id] ?? d.color_name}
+                                                    onChange={(e) => setDraftDrinkColors({...draftDrinkColors, [d.id]: e.target.value})}
+                                                    className="bg-[#1A1D24] border border-[#2A2D35] rounded text-white py-1.5 px-2 outline-none"
+                                                    disabled={!d.is_active}
+                                                >
+                                                    {colors.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                                                </select>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-xs">
+                                                <span className="text-zinc-500 uppercase">Stock:</span>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    value={draftStocks[d.id] ?? d.stock.toString()}
+                                                    onChange={(e) => setDraftStocks({...draftStocks, [d.id]: e.target.value})}
+                                                    className="w-16 bg-[#1A1D24] border border-[#2A2D35] rounded text-white font-mono px-2 py-1.5 text-right outline-none focus:border-amber-500"
+                                                    disabled={!d.is_active}
+                                                />
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                                <button
+                                                    onClick={() => {
+                                                        const stockStr = draftStocks[d.id];
+                                                        const s = stockStr !== undefined ? parseInt(stockStr, 10) : undefined;
+                                                        const c = draftDrinkColors[d.id];
+                                                        updateDrink(d.id, s, c);
+                                                    }}
+                                                    disabled={!d.is_active}
+                                                    className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-50"
+                                                    title="Save Changes"
+                                                >
+                                                    <Save className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => toggleDrinkStatus(d.id, d.is_active)}
+                                                    className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500"
+                                                    title={d.is_active ? 'Disable Drink' : 'Enable Drink'}
+                                                >
+                                                    <Power className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => deleteDrink(d.id)}
+                                                    className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500"
+                                                    title="Delete Drink"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
-                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                                <div className="flex items-center gap-2 text-xs">
-                                    <span className="text-zinc-500 uppercase">Color:</span>
-                                    <select
-                                        value={draftDrinkColors[d.id] ?? d.color_name}
-                                        onChange={(e) => setDraftDrinkColors({...draftDrinkColors, [d.id]: e.target.value})}
-                                        className="bg-[#1A1D24] border border-[#2A2D35] rounded text-white py-1.5 px-2 outline-none"
-                                        disabled={!d.is_active}
-                                    >
-                                        {colors.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                                    </select>
-                                </div>
-                                <div className="flex items-center gap-2 text-xs">
-                                    <span className="text-zinc-500 uppercase">Stock:</span>
-                                    <input
-                                        type="number"
-                                        min="0"
-                                        value={draftStocks[d.id] ?? d.stock.toString()}
-                                        onChange={(e) => setDraftStocks({...draftStocks, [d.id]: e.target.value})}
-                                        className="w-16 bg-[#1A1D24] border border-[#2A2D35] rounded text-white font-mono px-2 py-1.5 text-right outline-none focus:border-amber-500"
-                                        disabled={!d.is_active}
-                                    />
-                                </div>
-                                <div className="flex items-center gap-1">
-                                    <button
-                                        onClick={() => {
-                                            const stockStr = draftStocks[d.id];
-                                            const s = stockStr !== undefined ? parseInt(stockStr, 10) : undefined;
-                                            const c = draftDrinkColors[d.id];
-                                            updateDrink(d.id, s, c);
-                                        }}
-                                        disabled={!d.is_active}
-                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-50"
-                                        title="Save Changes"
-                                    >
-                                        <Save className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => toggleDrinkStatus(d.id, d.is_active)}
-                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500"
-                                        title={d.is_active ? 'Disable Drink' : 'Enable Drink'}
-                                    >
-                                        <Power className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => deleteDrink(d.id)}
-                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500"
-                                        title="Delete Drink"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
+                        ));
+                    })()}
                 </div>
 
                 <div className="mt-8 pt-6 border-t border-[#2A2D35]">
