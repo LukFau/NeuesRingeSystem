@@ -1,5 +1,5 @@
 param(
-    [string]$Code = "999123"
+    [string]$Code = "999000"
 )
 
 $AppUrl = $env:APP_URL

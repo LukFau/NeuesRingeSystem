@@ -1,10 +1,10 @@
 param(
-    [string]$Code = "999789"
+    [string]$Code = "999124"
 )
 
 $AppUrl = $env:APP_URL
 if ([string]::IsNullOrEmpty($AppUrl)) {
-    $AppUrl = "http://192.168.0.90:3000"
+    $AppUrl = "http://localhost:3000"
 }
 
 $uri = "$AppUrl/api/scan"

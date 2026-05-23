@@ -13,7 +13,11 @@ export default function AdminDashboard() {
     const [draftPrices, setDraftPrices] = useState<Record<string, string>>({});
     const [draftStocks, setDraftStocks] = useState<Record<number, string>>({});
     const [draftDrinkColors, setDraftDrinkColors] = useState<Record<number, string>>({});
-    const [newDrink, setNewDrink] = useState({ name: '', color_name: 'Rot', stock: '', barcode: '' });
+    const [draftDrinkCategory, setDraftDrinkCategory] = useState<Record<number, string>>({});
+    const [newDrink, setNewDrink] = useState({ name: '', color_name: 'Rot', category: 'Softdrinks', stock: '', barcode: '' });
+
+    const [users, setUsers] = useState<{id: number, username: string, role: string}[]>([]);
+    const [passwords, setPasswords] = useState<Record<number, string>>({});
 
     const [loading, setLoading] = useState(true);
 
@@ -22,6 +26,14 @@ export default function AdminDashboard() {
             const res = await fetch('/api/admin/tallies', { headers: { 'Authorization': `Bearer ${token}` } });
             const data = await res.json();
             setAdminTallies(data);
+        } catch (err) {}
+    };
+
+    const fetchUsers = async () => {
+        try {
+            const res = await fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await res.json();
+            setUsers(data);
         } catch (err) {}
     };
 
@@ -42,9 +54,9 @@ export default function AdminDashboard() {
     };
 
     useEffect(() => {
-        Promise.all([fetchTallies(), fetchDrinks(), fetchColors()]).finally(() => setLoading(false));
+        Promise.all([fetchTallies(), fetchDrinks(), fetchColors(), fetchUsers()]).finally(() => setLoading(false));
 
-        const handleRefresh = () => { fetchTallies(); fetchDrinks(); };
+        const handleRefresh = () => { fetchTallies(); fetchDrinks(); fetchUsers(); };
         window.addEventListener('refresh-tallies', handleRefresh);
         window.addEventListener('refresh-drinks', handleRefresh);
         return () => {
@@ -52,6 +64,30 @@ export default function AdminDashboard() {
             window.removeEventListener('refresh-drinks', handleRefresh);
         };
     }, [token]);
+
+    const changeUserPassword = async (userId: number) => {
+        const newPassword = passwords[userId];
+        if (!newPassword || newPassword.trim() === '') return;
+
+        try {
+            const res = await fetch(`/api/admin/users/${userId}/password`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ newPassword: newPassword.trim() })
+            });
+            if (res.ok) {
+                alert('Password updated successfully');
+                setPasswords(prev => { const next = {...prev}; delete next[userId]; return next; });
+            } else {
+                alert('Failed to update password');
+            }
+        } catch (err) {
+            alert('Error updating password');
+        }
+    };
+
+    const [debugReport, setDebugReport] = useState<string | null>(null);
+    const [debugOffset, setDebugOffset] = useState<number>(0);
 
     const manualExport = async () => {
         const btn = document.getElementById('export-btn');
@@ -63,6 +99,17 @@ export default function AdminDashboard() {
             alert('Failed to send export.');
         }
         if (btn) btn.innerText = 'Trigger Report Export';
+    };
+
+    const previewReport = async (offset: number) => {
+        try {
+            const res = await fetch(`/api/admin/debug/report?offset=${offset}`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await res.json();
+            setDebugReport(data.report);
+            setDebugOffset(offset);
+        } catch (err) {
+            alert('Failed to load debug report.');
+        }
     };
 
     const updateColorPrice = async (name: string, priceStr?: string) => {
@@ -84,10 +131,11 @@ export default function AdminDashboard() {
         }
     };
 
-    const updateDrink = async (id: number, newStock?: number, newColor?: string) => {
+    const updateDrink = async (id: number, newStock?: number, newColor?: string, newCategory?: string) => {
         const payload: any = {};
         if (newStock !== undefined && !isNaN(newStock) && newStock >= 0) payload.stock = newStock;
         if (newColor !== undefined) payload.color_name = newColor;
+        if (newCategory !== undefined) payload.category = newCategory;
 
         if (Object.keys(payload).length === 0) return;
 
@@ -100,6 +148,7 @@ export default function AdminDashboard() {
 
             setDraftStocks(prev => { const next = {...prev}; if(newStock !== undefined) delete next[id]; return next; });
             setDraftDrinkColors(prev => { const next = {...prev}; if(newColor !== undefined) delete next[id]; return next; });
+            setDraftDrinkCategory(prev => { const next = {...prev}; if(newCategory !== undefined) delete next[id]; return next; });
             fetchDrinks();
         } catch (err) {
             console.error(err);
@@ -143,12 +192,13 @@ export default function AdminDashboard() {
                 body: JSON.stringify({
                     name: newDrink.name,
                     color_name: newDrink.color_name,
+                    category: newDrink.category,
                     stock: parseInt(newDrink.stock, 10),
                     barcode: newDrink.barcode
                 })
             });
             if (res.ok) {
-                setNewDrink({ name: '', color_name: 'Rot', stock: '', barcode: '' });
+                setNewDrink({ name: '', color_name: 'Rot', category: 'Softdrinks', stock: '', barcode: '' });
                 fetchDrinks();
             }
         } catch (err) {
@@ -224,6 +274,37 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">User Management</h2>
+                <div className="space-y-3">
+                    {users.map(u => (
+                        <div key={u.id} className="flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3">
+                            <div className="font-medium flex items-center gap-2">
+                                {u.username} <span className="text-[10px] bg-[#1A1D24] text-zinc-400 px-2 py-0.5 rounded-full ml-2 uppercase font-bold tracking-widest">{u.role}</span>
+                            </div>
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                                <div className="flex items-center gap-2 text-xs w-full sm:w-auto">
+                                    <input
+                                        type="password"
+                                        placeholder="New Password"
+                                        value={passwords[u.id] || ''}
+                                        onChange={(e) => setPasswords({...passwords, [u.id]: e.target.value})}
+                                        className="w-full sm:w-40 bg-[#1A1D24] border border-[#2A2D35] rounded text-white px-3 py-1.5 outline-none focus:border-amber-500 placeholder-zinc-700"
+                                    />
+                                </div>
+                                <button
+                                    onClick={() => changeUserPassword(u.id)}
+                                    disabled={!passwords[u.id] || passwords[u.id].trim() === ''}
+                                    className="px-3 py-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-30 disabled:hover:border-[#2A2D35] disabled:hover:text-zinc-500 text-xs uppercase tracking-widest font-bold font-mono transition-colors"
+                                >
+                                    Update
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
                 <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Drink Inventory & Binding</h2>
                 <div className="space-y-6">
                     {(() => {
@@ -260,6 +341,19 @@ export default function AdminDashboard() {
                                                 </select>
                                             </div>
                                             <div className="flex items-center gap-2 text-xs">
+                                                <span className="text-zinc-500 uppercase">Category:</span>
+                                                <select
+                                                    value={draftDrinkCategory[d.id] ?? d.category}
+                                                    onChange={(e) => setDraftDrinkCategory({...draftDrinkCategory, [d.id]: e.target.value})}
+                                                    className="bg-[#1A1D24] border border-[#2A2D35] rounded text-white py-1.5 px-2 outline-none"
+                                                    disabled={!d.is_active}
+                                                >
+                                                    <option value="Softdrinks">Softdrinks</option>
+                                                    <option value="Bier">Bier</option>
+                                                    <option value="Apfelwein">Apfelwein</option>
+                                                </select>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-xs">
                                                 <span className="text-zinc-500 uppercase">Stock:</span>
                                                 <input
                                                     type="number"
@@ -276,7 +370,8 @@ export default function AdminDashboard() {
                                                         const stockStr = draftStocks[d.id];
                                                         const s = stockStr !== undefined ? parseInt(stockStr, 10) : undefined;
                                                         const c = draftDrinkColors[d.id];
-                                                        updateDrink(d.id, s, c);
+                                                        const cat = draftDrinkCategory[d.id];
+                                                        updateDrink(d.id, s, c, cat);
                                                     }}
                                                     disabled={!d.is_active}
                                                     className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-50"
@@ -325,6 +420,15 @@ export default function AdminDashboard() {
                         >
                             {colors.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                         </select>
+                        <select
+                            value={newDrink.category}
+                            onChange={(e) => setNewDrink({...newDrink, category: e.target.value})}
+                            className="w-full sm:w-32 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        >
+                            <option value="Softdrinks">Softdrinks</option>
+                            <option value="Bier">Bier</option>
+                            <option value="Apfelwein">Apfelwein</option>
+                        </select>
                         <input
                             type="number"
                             placeholder="Stock"
@@ -350,17 +454,61 @@ export default function AdminDashboard() {
 
             <div className="mt-12 pt-8 border-t border-[#2A2D35]">
                 <h3 className="text-xs text-amber-500 font-bold uppercase tracking-widest mb-4">
-                    System Admin
+                    System Admin & Debug
                 </h3>
-                <button
-                    id="export-btn"
-                    onClick={manualExport}
-                    className="w-full md:w-auto py-4 px-6 bg-[#0A0C0F] border border-[#2A2D35] rounded-lg text-zinc-400 text-xs font-bold uppercase hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
-                >
-                    <Download className="w-4 h-4" />
-                    Trigger Report Export
-                </button>
-                <p className="text-[10px] font-mono text-zinc-600 mt-3">Executes immediate email report for the current month.</p>
+                <div className="flex flex-col md:flex-row gap-4 mb-4">
+                    <button
+                        id="export-btn"
+                        onClick={manualExport}
+                        className="w-full md:w-auto py-4 px-6 bg-[#0A0C0F] border border-[#2A2D35] rounded-lg text-zinc-400 text-xs font-bold uppercase hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <Download className="w-4 h-4" />
+                        Email Current Month
+                    </button>
+                    <button
+                        onClick={() => previewReport(0)}
+                        className="w-full md:w-auto py-4 px-6 bg-[#0A0C0F] border border-[#2A2D35] rounded-lg text-zinc-400 text-xs font-bold uppercase hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <AlertTriangle className="w-4 h-4" />
+                        Preview Current
+                    </button>
+                    <button
+                        onClick={() => previewReport(-1)}
+                        className="w-full md:w-auto py-4 px-6 bg-[#0A0C0F] border border-[#2A2D35] rounded-lg text-zinc-400 text-xs font-bold uppercase hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <AlertTriangle className="w-4 h-4" />
+                        Preview Previous (-1)
+                    </button>
+                    <button
+                        onClick={async () => {
+                            if (window.confirm('Are you absolutely sure you want to WIPE all consumption data? This is irreversible and should only be used after testing.')) {
+                                try {
+                                    await fetch('/api/admin/debug/wipe', { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` }});
+                                    alert('All consumption data has been wiped. You are starting fresh.');
+                                    window.location.reload();
+                                } catch (err) {
+                                    alert('Failed to wipe data.');
+                                }
+                            }
+                        }}
+                        className="w-full md:w-auto py-4 px-6 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-xs font-bold uppercase hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                        Wipe Test Data
+                    </button>
+                </div>
+                <p className="text-[10px] font-mono text-zinc-600">Note: The system dynamically filters data by date, so consumption from previous months is NOT included in the current month's report. There is no need to clear the database.</p>
+                {debugReport !== null && (
+                    <div className="mt-6">
+                        <div className="flex justify-between items-center mb-2">
+                            <h4 className="text-[10px] text-zinc-400 uppercase tracking-widest font-bold">Generated Report Output (Offset: {debugOffset})</h4>
+                            <button onClick={() => setDebugReport(null)} className="text-zinc-500 text-xs font-mono uppercase hover:text-white">Close</button>
+                        </div>
+                        <pre className="bg-[#0A0C0F] border border-[#2A2D35] rounded-lg p-4 text-[10px] sm:text-xs text-white font-mono overflow-auto max-h-[400px]">
+                            {debugReport}
+                        </pre>
+                    </div>
+                )}
             </div>
         </motion.div>
     );

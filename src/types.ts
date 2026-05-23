@@ -9,6 +9,7 @@ export interface Drink {
     barcode: string;
     name: string;
     color_name: string;
+    category: string;
     price: number; // resolved from colors
     stock: number;
     min_stock: number;
@@ -27,6 +28,7 @@ export interface HistoryEvent {
     price: number;
     date: string;
     quantity: number;
+    paid_via_paypal?: number;
 }
 
 export interface UserStats {

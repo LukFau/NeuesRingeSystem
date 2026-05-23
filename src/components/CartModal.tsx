@@ -117,6 +117,29 @@ export default function CartModal({ cart, setCart }: Props) {
         }
     };
 
+    const handlePaypalCheckout = async () => {
+        if (!tempToken) return;
+        try {
+            const promises = items.map(item =>
+                fetch('/api/tallies', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${tempToken}`
+                    },
+                    body: JSON.stringify({ drinkId: item.id, quantity: item.quantity, payViaPayPal: true })
+                })
+            );
+            await Promise.all(promises);
+            window.dispatchEvent(new Event('refresh-tallies'));
+            setStep('qr');
+            // Log out user completely when done
+            logout();
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
     const updateQuantity = (id: number, delta: number) => {
         setCart(prev => {
             const remainingItems = prev.filter(p => (p as any).id !== id);
@@ -224,12 +247,17 @@ export default function CartModal({ cart, setCart }: Props) {
 
                         <div className="w-full space-y-3">
                             {tempMode === 'user' ? (
-                                <button onClick={handleBuchen} className="w-full py-5 bg-amber-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:bg-amber-400 transition-colors">
-                                    Buchen (€{totalPrice})
-                                </button>
+                                <>
+                                    <button onClick={handleBuchen} className="w-full py-5 bg-amber-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:bg-amber-400 transition-colors">
+                                        Buchen (€{totalPrice})
+                                    </button>
+                                    <button onClick={handlePaypalCheckout} className="w-full py-5 bg-emerald-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400 transition-colors">
+                                        Pay with PayPal (€{totalPrice})
+                                    </button>
+                                </>
                             ) : (
                                 <button onClick={handleGuestCheckout} className="w-full py-5 bg-emerald-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400 transition-colors">
-                                    Bezahlen (€{totalPrice})
+                                    Bezahlen mit PayPal (€{totalPrice})
                                 </button>
                             )}
                             <button onClick={clearAll} className="w-full text-zinc-500 hover:text-white py-3 font-bold uppercase tracking-widest text-[10px] transition-colors pt-4">
@@ -241,7 +269,7 @@ export default function CartModal({ cart, setCart }: Props) {
 
                 {step === 'qr' && (
                     <div className="w-full flex flex-col items-center">
-                        <h4 className="text-zinc-500 text-[10px] font-black uppercase tracking-[0.2em] mb-4 mt-6">Guest Checkout</h4>
+                        <h4 className="text-zinc-500 text-[10px] font-black uppercase tracking-[0.2em] mb-4 mt-6">Scan to Pay</h4>
                         <div className="bg-white p-6 rounded-2xl mb-6 shadow-xl border-4 border-[#2A2D35]">
                             <QRCode value={qrData} size={180} />
                         </div>

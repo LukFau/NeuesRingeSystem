@@ -20,6 +20,7 @@ export default function UnknownScanModal({ scan, onClose, colors }: Props) {
     const [registerError, setRegisterError] = useState('');
     const [newName, setNewName] = useState('');
     const [newColor, setNewColor] = useState('Rot');
+    const [newCategory, setNewCategory] = useState('Softdrinks');
     const [newStock, setNewStock] = useState('10');
 
     const isAdmin = user?.role === 'admin' || !!adminToken;
@@ -56,6 +57,7 @@ export default function UnknownScanModal({ scan, onClose, colors }: Props) {
                 body: JSON.stringify({
                     name: newName,
                     color_name: newColor,
+                    category: newCategory,
                     stock: parseInt(newStock, 10),
                     barcode: scan.barcode
                 })
@@ -158,6 +160,18 @@ export default function UnknownScanModal({ scan, onClose, colors }: Props) {
                                         className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 appearance-none"
                                     >
                                         {colors.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="flex-1">
+                                    <label className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-1 block">Category</label>
+                                    <select
+                                        value={newCategory}
+                                        onChange={e => setNewCategory(e.target.value)}
+                                        className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 appearance-none"
+                                    >
+                                        <option value="Softdrinks">Softdrinks</option>
+                                        <option value="Bier">Bier</option>
+                                        <option value="Apfelwein">Apfelwein</option>
                                     </select>
                                 </div>
                                 <div className="flex-1">

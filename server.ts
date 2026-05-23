@@ -36,6 +36,7 @@ db.exec(`
                                           barcode TEXT UNIQUE NOT NULL,
                                           name TEXT NOT NULL,
                                           color_name TEXT DEFAULT 'Rot',
+                                          category TEXT DEFAULT 'Softdrinks',
                                           price REAL NOT NULL DEFAULT 0,
                                           stock INTEGER NOT NULL DEFAULT 10,
                                           min_stock INTEGER NOT NULL DEFAULT 5,
@@ -47,6 +48,7 @@ db.exec(`
                                                    user_id INTEGER NOT NULL,
                                                    drink_id INTEGER NOT NULL,
                                                    quantity INTEGER NOT NULL,
+                                                   paid_via_paypal BOOLEAN DEFAULT 0,
                                                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 `);
@@ -55,7 +57,9 @@ db.exec(`
 try { db.exec('ALTER TABLE drinks ADD COLUMN stock INTEGER NOT NULL DEFAULT 10'); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN min_stock INTEGER NOT NULL DEFAULT 5'); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN color_name TEXT'); } catch (e) {}
+try { db.exec("ALTER TABLE drinks ADD COLUMN category TEXT DEFAULT 'Softdrinks'"); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN is_active BOOLEAN DEFAULT 1'); } catch (e) {}
+try { db.exec('ALTER TABLE consumption_log ADD COLUMN paid_via_paypal BOOLEAN DEFAULT 0'); } catch (e) {}
 
 const colorCount = db.prepare('SELECT COUNT(*) as c FROM colors').get() as {c: number};
 if (colorCount.c === 0) {
@@ -176,26 +180,31 @@ app.get('/api/drinks', (req, res) => {
     res.json(drinks);
 });
 
-// Helper to get current month boundary
-function getMonthStart() {
-    const d = new Date();
-    d.setDate(1);
-    d.setHours(0, 0, 0, 0);
-    return d.toISOString();
+// Helper to get current month boundaries, with optional offset
+function getMonthBoundaries(offsetMonths = 0) {
+    const start = new Date();
+    start.setMonth(start.getMonth() + offsetMonths);
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+
+    return { start: start.toISOString(), end: end.toISOString() };
 }
 
 app.get('/api/tallies/me', authenticateToken, (req, res) => {
     const userId = (req as any).user.id;
-    const monthStart = getMonthStart();
+    const { start, end } = getMonthBoundaries();
 
     const history = db.prepare(`
-        SELECT c_log.id, d.name as drink_name, d.color_name, c.price, c_log.created_at as date, c_log.quantity
+        SELECT c_log.id, d.name as drink_name, d.color_name, c.price, c_log.created_at as date, c_log.quantity, c_log.paid_via_paypal
         FROM consumption_log c_log
             JOIN drinks d ON c_log.drink_id = d.id
             LEFT JOIN colors c ON d.color_name = c.name
-        WHERE c_log.user_id = ? AND c_log.created_at >= ?
+        WHERE c_log.user_id = ? AND c_log.created_at >= ? AND c_log.created_at < ?
         ORDER BY c_log.created_at DESC
-    `).all(userId, monthStart) as any[];
+    `).all(userId, start, end) as any[];
 
     const colorsStats: Record<string, number> = {};
     let totalSpent = 0;
@@ -203,7 +212,9 @@ app.get('/api/tallies/me', authenticateToken, (req, res) => {
     history.forEach(log => {
         if (!colorsStats[log.color_name]) colorsStats[log.color_name] = 0;
         colorsStats[log.color_name] += log.quantity;
-        totalSpent += (log.price || 0) * log.quantity;
+        if (!log.paid_via_paypal) {
+            totalSpent += (log.price || 0) * log.quantity;
+        }
     });
 
     res.json({ colors: colorsStats, totalSpent, history });
@@ -211,14 +222,14 @@ app.get('/api/tallies/me', authenticateToken, (req, res) => {
 
 app.post('/api/tallies', authenticateToken, (req, res) => {
     const userId = (req as any).user.id;
-    const { drinkId, quantity } = req.body;
+    const { drinkId, quantity, payViaPayPal } = req.body;
 
     if (quantity > 0) {
-        db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity) VALUES (?, ?, ?)').run(userId, drinkId, quantity);
+        db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, ?)').run(userId, drinkId, quantity, payViaPayPal ? 1 : 0);
     }
 
     db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(quantity, drinkId);
-    res.json({ success: true });
+    res.json({ success: true, payViaPayPal });
 });
 
 app.post('/api/guest-checkout', (req, res) => {
@@ -228,7 +239,7 @@ app.post('/api/guest-checkout', (req, res) => {
         db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(qty, drinkId);
         const guest = db.prepare("SELECT id FROM users WHERE username = 'guest'").get() as any;
         if (guest) {
-            db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity) VALUES (?, ?, ?)').run(guest.id, drinkId, qty);
+            db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, 1)').run(guest.id, drinkId, qty);
         }
     }
     res.json({ success: true, message: 'Guest checkout initiated' });
@@ -270,17 +281,17 @@ app.get('/api/scans/stream', (req, res) => {
     });
 });
 
-function generateAdminData() {
-    const monthStart = getMonthStart();
+function generateAdminData(offsetMonths = 0) {
+    const { start, end } = getMonthBoundaries(offsetMonths);
     const logs = db.prepare(`
         SELECT u.username, d.color_name, c.price, SUM(c_log.quantity) as qty
         FROM consumption_log c_log
                  JOIN users u ON c_log.user_id = u.id
                  JOIN drinks d ON c_log.drink_id = d.id
                  LEFT JOIN colors c ON d.color_name = c.name
-        WHERE c_log.created_at >= ?
+        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND c_log.paid_via_paypal = 0
         GROUP BY u.username, d.color_name
-    `).all(monthStart) as any[];
+    `).all(start, end) as any[];
 
     const userMaps: Record<string, any> = {};
     logs.forEach(row => {
@@ -294,8 +305,8 @@ function generateAdminData() {
     return Object.values(userMaps).sort((a, b) => a.username.localeCompare(b.username));
 }
 
-function generateReportText() {
-    const data = generateAdminData();
+function generateReportText(offsetMonths = 0) {
+    const data = generateAdminData(offsetMonths);
     const allColorsLookup = db.prepare('SELECT name FROM colors').all() as any[];
     const colorNames = allColorsLookup.map(c => c.name);
 
@@ -331,8 +342,8 @@ function generateReportText() {
     return txt;
 }
 
-async function sendReportEmail() {
-    const reportText = generateReportText();
+async function sendReportEmail(offsetMonths = 0) {
+    const reportText = generateReportText(offsetMonths);
 
     const lowStockDrinks = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE stock <= min_stock').all() as any[];
     let lowStockText = '';
@@ -366,13 +377,18 @@ app.put('/api/admin/colors/:name', authenticateToken, isAdmin, (req, res) => {
 
 app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
     const { id } = req.params;
-    const { color_name, stock, is_active } = req.body;
+    const { color_name, stock, is_active, category } = req.body;
     try {
         let query = 'UPDATE drinks SET ';
         const params: any[] = [];
         if (color_name !== undefined) {
             query += 'color_name = ?';
             params.push(color_name);
+        }
+        if (category !== undefined) {
+            if (params.length > 0) query += ', ';
+            query += 'category = ?';
+            params.push(category);
         }
         if (stock !== undefined) {
             if (params.length > 0) query += ', ';
@@ -407,12 +423,13 @@ app.delete('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
 });
 
 app.post('/api/admin/drinks', authenticateToken, isAdmin, (req, res) => {
-    const { name, color_name, stock, barcode } = req.body;
+    const { name, color_name, category, stock, barcode } = req.body;
     try {
-        const result = db.prepare('INSERT INTO drinks (barcode, name, color_name, stock, price) VALUES (?, ?, ?, ?, ?)').run(
+        const result = db.prepare('INSERT INTO drinks (barcode, name, color_name, category, stock, price) VALUES (?, ?, ?, ?, ?, ?)').run(
             barcode || String(Date.now()),
             name,
             color_name || 'Rot',
+            category || 'Softdrinks',
             Number(stock || 0),
             0
         );
@@ -420,6 +437,21 @@ app.post('/api/admin/drinks', authenticateToken, isAdmin, (req, res) => {
     } catch (err: any) {
         console.error('Drinks Create Error:', err);
         res.status(500).json({ error: err.message || 'Failed to create drink' });
+    }
+});
+
+app.get('/api/admin/debug/report', authenticateToken, isAdmin, (req, res) => {
+    const offset = parseInt(req.query.offset as string) || 0;
+    const txt = generateReportText(offset);
+    res.json({ report: txt });
+});
+
+app.delete('/api/admin/debug/wipe', authenticateToken, isAdmin, (req, res) => {
+    try {
+        db.prepare('DELETE FROM consumption_log').run();
+        res.json({ success: true, message: 'All consumption data wiped' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to wipe data' });
     }
 });
 
@@ -432,14 +464,60 @@ app.post('/api/admin/export', authenticateToken, isAdmin, async (req, res) => {
     }
 });
 
+app.get('/api/leaderboard', authenticateToken, (req, res) => {
+    const { start, end } = getMonthBoundaries();
+    const category = req.query.category as string;
+
+    let query = `
+        SELECT u.username, SUM(c_log.quantity) as total_drinks
+        FROM consumption_log c_log
+        JOIN users u ON c_log.user_id = u.id
+        JOIN drinks d ON c_log.drink_id = d.id
+        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND u.role != 'admin'
+    `;
+    const params: any[] = [start, end];
+
+    if (category && category !== 'All') {
+        query += ` AND d.category = ?`;
+        params.push(category);
+    }
+
+    query += `
+        GROUP BY u.username
+        ORDER BY total_drinks DESC
+        LIMIT 10
+    `;
+
+    const ranking = db.prepare(query).all(...params);
+    res.json(ranking);
+});
+
 app.get('/api/admin/tallies', authenticateToken, isAdmin, (req, res) => {
     res.json(generateAdminData());
+});
+
+app.get('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
+    const users = db.prepare('SELECT id, username, role FROM users').all();
+    res.json(users);
+});
+
+app.put('/api/admin/users/:id/password', authenticateToken, isAdmin, (req, res) => {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    try {
+        const hash = bcrypt.hashSync(newPassword, 10);
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update password' });
+    }
 });
 
 cron.schedule('0 0 1 * *', async () => {
     console.log('Running monthly tally report...');
     try {
-        await sendReportEmail();
+        // Send report for the previous month (-1) since we are at the 1st of the new month
+        await sendReportEmail(-1);
     } catch (error) {
         console.error('Monthly CRON job failed:', error);
     }
