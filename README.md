@@ -11,3 +11,5 @@ This contains everything you need to run your app locally.
    `npm install`
 2. Run the app:
    `npm run dev`
+3. Open the app in the browser:
+    'http://localhost:3000'
