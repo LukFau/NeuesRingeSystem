@@ -15,6 +15,7 @@ export default function AdminDashboard() {
     const [draftDrinkColors, setDraftDrinkColors] = useState<Record<number, string>>({});
     const [draftDrinkCategory, setDraftDrinkCategory] = useState<Record<number, string>>({});
     const [newDrink, setNewDrink] = useState({ name: '', color_name: 'Rot', category: 'Softdrinks', stock: '', barcode: '' });
+    const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' });
 
     const [users, setUsers] = useState<{id: number, username: string, role: string}[]>([]);
     const [passwords, setPasswords] = useState<Record<number, string>>({});
@@ -83,6 +84,39 @@ export default function AdminDashboard() {
             }
         } catch (err) {
             alert('Error updating password');
+        }
+    };
+
+    const createUser = async (e: React.FormEvent) => {
+        e.preventDefault();
+        try {
+            const res = await fetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(newUser)
+            });
+            if (res.ok) {
+                setNewUser({ username: '', password: '', role: 'user' });
+                fetchUsers();
+            } else {
+                const data = await res.json();
+                alert(data.error || 'Failed to create user');
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const deleteUser = async (id: number) => {
+        if (!confirm('Are you sure you want to delete this user?')) return;
+        try {
+            await fetch(`/api/admin/users/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            fetchUsers();
+        } catch (err) {
+            console.error(err);
         }
     };
 
@@ -298,9 +332,51 @@ export default function AdminDashboard() {
                                 >
                                     Update
                                 </button>
+                                {u.role !== 'admin' && (
+                                    <button
+                                        onClick={() => deleteUser(u.id)}
+                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500 transition-colors"
+                                        title="Delete User"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                )}
                             </div>
                         </div>
                     ))}
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-[#2A2D35]">
+                    <h3 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-4">Add New User</h3>
+                    <form onSubmit={createUser} className="flex flex-col sm:flex-row gap-3">
+                        <input
+                            type="text"
+                            placeholder="Username"
+                            required
+                            value={newUser.username}
+                            onChange={e => setNewUser({...newUser, username: e.target.value})}
+                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        />
+                        <input
+                            type="password"
+                            placeholder="Password"
+                            required
+                            value={newUser.password}
+                            onChange={e => setNewUser({...newUser, password: e.target.value})}
+                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        />
+                        <select
+                            value={newUser.role}
+                            onChange={(e) => setNewUser({...newUser, role: e.target.value})}
+                            className="w-full sm:w-32 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        >
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                        <button type="submit" className="bg-amber-500 text-black px-4 py-2 font-bold uppercase text-xs rounded hover:bg-amber-400">
+                            Add
+                        </button>
+                    </form>
                 </div>
             </div>
 

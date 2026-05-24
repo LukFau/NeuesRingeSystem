@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
+import https from 'https';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
 import cron from 'node-cron';
@@ -246,7 +248,7 @@ app.post('/api/guest-checkout', (req, res) => {
 });
 
 app.post('/api/scan', (req, res) => {
-    const { barcode } = req.body;
+    const { barcode, source } = req.body;
     console.log('Received scan:', barcode);
     const drink = db.prepare(`
         SELECT d.*, c.price
@@ -254,14 +256,21 @@ app.post('/api/scan', (req, res) => {
                  LEFT JOIN colors c ON d.color_name = c.name
         WHERE d.barcode = ?
     `).get(barcode) as any;
+
     if (drink) {
         console.log('Found drink:', drink.name);
-        scanEmitter.emit('scan', { ...drink, type: 'known', timestamp: new Date().toISOString() });
-        res.json({ success: true, drink });
+        const scanEvent = { ...drink, type: 'known', timestamp: new Date().toISOString() };
+        if (source !== 'mobile') {
+            scanEmitter.emit('scan', scanEvent);
+        }
+        res.json({ success: true, drink: scanEvent });
     } else {
         console.log('Unknown barcode:', barcode);
-        scanEmitter.emit('scan', { type: 'unknown', barcode, timestamp: new Date().toISOString() });
-        res.status(404).json({ error: 'Drink not found', barcode });
+        const scanEvent = { type: 'unknown', barcode, timestamp: new Date().toISOString() };
+        if (source !== 'mobile') {
+            scanEmitter.emit('scan', scanEvent);
+        }
+        res.status(404).json({ error: 'Drink not found', barcode, scanEvent });
     }
 });
 
@@ -471,8 +480,8 @@ app.get('/api/leaderboard', authenticateToken, (req, res) => {
     let query = `
         SELECT u.username, SUM(c_log.quantity) as total_drinks
         FROM consumption_log c_log
-        JOIN users u ON c_log.user_id = u.id
-        JOIN drinks d ON c_log.drink_id = d.id
+                 JOIN users u ON c_log.user_id = u.id
+                 JOIN drinks d ON c_log.drink_id = d.id
         WHERE c_log.created_at >= ? AND c_log.created_at < ? AND u.role != 'admin'
     `;
     const params: any[] = [start, end];
@@ -513,6 +522,31 @@ app.put('/api/admin/users/:id/password', authenticateToken, isAdmin, (req, res) 
     }
 });
 
+app.post('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
+    const { username, password, role } = req.body;
+    try {
+        const hash = bcrypt.hashSync(password, 10);
+        const result = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run(username, hash, role || 'user');
+        res.json({ success: true, id: result.lastInsertRowid });
+    } catch (err) {
+        if ((err as Error).message.includes('UNIQUE constraint failed')) {
+            res.status(400).json({ error: 'Username already exists' });
+        } else {
+            res.status(500).json({ error: 'Failed to create user' });
+        }
+    }
+});
+
+app.delete('/api/admin/users/:id', authenticateToken, isAdmin, (req, res) => {
+    const { id } = req.params;
+    try {
+        db.prepare('DELETE FROM users WHERE id = ?').run(Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete user' });
+    }
+});
+
 cron.schedule('0 0 1 * *', async () => {
     console.log('Running monthly tally report...');
     try {
@@ -537,9 +571,25 @@ async function startServer() {
         });
     }
 
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running at http://0.0.0.0:\${PORT}`);
-    });
+    const keyPath = path.join(process.cwd(), 'server.key');
+    const certPath = path.join(process.cwd(), 'server.cert');
+
+    const useHttps = fs.existsSync(keyPath) && fs.existsSync(certPath);
+
+    if (useHttps) {
+        const httpsOptions = {
+            key: fs.readFileSync(keyPath),
+            cert: fs.readFileSync(certPath)
+        };
+        const server = https.createServer(httpsOptions, app);
+        server.listen(PORT, '0.0.0.0', () => {
+            console.log(`HTTPS Server running at https://0.0.0.0:${PORT}`);
+        });
+    } else {
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`Server running at http://0.0.0.0:${PORT}`);
+        });
+    }
 }
 
 startServer();

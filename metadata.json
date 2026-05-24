@@ -1,6 +1,6 @@
 {
   "name": "BevTally",
   "description": "Hardware-connected beverage tally system with ESP32 webhook, monthly cron reports, and touchscreen UI.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
