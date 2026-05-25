@@ -77,6 +77,36 @@ export default function CartModal({ cart, setCart }: Props) {
 
     const clearAll = () => setCart([]);
 
+    const playChaChing = () => {
+        try {
+            const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+
+            // "Cha"
+            osc.frequency.setValueAtTime(1200, ctx.currentTime);
+            // "Ching"
+            osc.frequency.setValueAtTime(2000, ctx.currentTime + 0.1);
+            osc.frequency.exponentialRampToValueAtTime(1000, ctx.currentTime + 0.5);
+
+            gain.gain.setValueAtTime(0, ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+            gain.gain.setValueAtTime(0.5, ctx.currentTime + 0.1);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+
+            osc.start();
+            osc.stop(ctx.currentTime + 0.5);
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
     const handleBuchen = async () => {
         if (!tempToken) return;
         try {
@@ -91,6 +121,7 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
+            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
             clearAll();
             // Log the user out completely after buchen
@@ -110,6 +141,7 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
+            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
             setStep('qr');
         } catch (err) {
@@ -131,6 +163,7 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
+            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
             setStep('qr');
             // Log out user completely when done

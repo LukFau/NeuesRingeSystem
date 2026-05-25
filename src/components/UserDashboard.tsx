@@ -10,6 +10,7 @@ export default function UserDashboard({ clearScan }: { clearScan: () => void }) 
     const [stats, setStats] = useState<UserStats | null>(null);
     const [leaderboard, setLeaderboard] = useState<{username: string, total_drinks: number}[]>([]);
     const [leaderboardCategory, setLeaderboardCategory] = useState<string>('All');
+    const [achievements, setAchievements] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
 
     const fetchTallies = async () => {
@@ -32,13 +33,21 @@ export default function UserDashboard({ clearScan }: { clearScan: () => void }) 
         } catch (err) {}
     };
 
+    const fetchAchievements = async () => {
+        try {
+            const res = await fetch('/api/users/achievements', { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await res.json();
+            setAchievements(data);
+        } catch (err) {}
+    };
+
     useEffect(() => {
         fetchLeaderboard();
     }, [leaderboardCategory]);
 
     useEffect(() => {
-        Promise.all([fetchTallies(), fetchLeaderboard()]).finally(() => setLoading(false));
-        const handleRefresh = () => { fetchTallies(); fetchLeaderboard(); };
+        Promise.all([fetchTallies(), fetchLeaderboard(), fetchAchievements()]).finally(() => setLoading(false));
+        const handleRefresh = () => { fetchTallies(); fetchLeaderboard(); fetchAchievements(); };
         window.addEventListener('refresh-tallies', handleRefresh);
         return () => window.removeEventListener('refresh-tallies', handleRefresh);
     }, [token]);
@@ -214,6 +223,26 @@ export default function UserDashboard({ clearScan }: { clearScan: () => void }) 
                     </div>
                 ) : (
                     <div className="text-center py-12 text-zinc-500 font-mono text-xs">NO DATA THIS MONTH</div>
+                )}
+            </div>
+
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-xl relative overflow-hidden">
+                <h3 className="text-zinc-500 text-xs font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <Heart className="w-4 h-4 text-emerald-500" /> Achievements
+                </h3>
+                {achievements.length > 0 ? (
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                        {achievements.map((ach) => (
+                            <div key={ach.id} className={`flex flex-col items-center p-4 rounded-xl border ${ach.unlocked ? 'bg-[#15181E] border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.1)]' : 'bg-[#0F1115] border-[#2A2D35] opacity-50 grayscale'}`}>
+                                <div className="text-4xl mb-3">{ach.icon}</div>
+                                <div className="text-white text-xs font-bold text-center mb-1">{ach.name}</div>
+                                <div className="text-zinc-500 text-[9px] text-center">{ach.description}</div>
+                                {ach.unlocked && <div className="text-emerald-500 text-[8px] uppercase tracking-widest font-black mt-2">Unlocked</div>}
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="text-center py-6 text-zinc-500 font-mono text-xs">NO ACHIEVEMENTS AVAILABLE</div>
                 )}
             </div>
 

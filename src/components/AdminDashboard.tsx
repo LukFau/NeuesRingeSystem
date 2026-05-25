@@ -19,6 +19,10 @@ export default function AdminDashboard() {
 
     const [users, setUsers] = useState<{id: number, username: string, role: string}[]>([]);
     const [passwords, setPasswords] = useState<Record<number, string>>({});
+    const [achievements, setAchievements] = useState<any[]>([]);
+    const [newAchievement, setNewAchievement] = useState({ name: '', description: '', icon: '🍺', condition_type: 'total_drinks', condition_value: '', condition_target: '' });
+    const [settings, setSettings] = useState<any[]>([]);
+    const [adminEmail, setAdminEmail] = useState('');
 
     const [loading, setLoading] = useState(true);
 
@@ -35,6 +39,24 @@ export default function AdminDashboard() {
             const res = await fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${token}` } });
             const data = await res.json();
             setUsers(data);
+        } catch (err) {}
+    };
+
+    const fetchAchievements = async () => {
+        try {
+            const res = await fetch('/api/admin/achievements', { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await res.json();
+            setAchievements(data);
+        } catch (err) {}
+    };
+
+    const fetchSettings = async () => {
+        try {
+            const res = await fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await res.json();
+            setSettings(data);
+            const emailSetting = data.find((s: any) => s.key === 'ADMIN_EMAIL');
+            if (emailSetting) setAdminEmail(emailSetting.value);
         } catch (err) {}
     };
 
@@ -55,9 +77,9 @@ export default function AdminDashboard() {
     };
 
     useEffect(() => {
-        Promise.all([fetchTallies(), fetchDrinks(), fetchColors(), fetchUsers()]).finally(() => setLoading(false));
+        Promise.all([fetchTallies(), fetchDrinks(), fetchColors(), fetchUsers(), fetchAchievements(), fetchSettings()]).finally(() => setLoading(false));
 
-        const handleRefresh = () => { fetchTallies(); fetchDrinks(); fetchUsers(); };
+        const handleRefresh = () => { fetchTallies(); fetchDrinks(); fetchUsers(); fetchAchievements(); fetchSettings(); };
         window.addEventListener('refresh-tallies', handleRefresh);
         window.addEventListener('refresh-drinks', handleRefresh);
         return () => {
@@ -238,6 +260,47 @@ export default function AdminDashboard() {
         } catch (err) {
             console.error(err);
         }
+    };
+
+    const updateAdminEmail = async () => {
+        try {
+            await fetch('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ key: 'ADMIN_EMAIL', value: adminEmail })
+            });
+            alert('Admin email updated');
+            fetchSettings();
+        } catch (err) { console.error(err); }
+    };
+
+    const createAchievement = async (e: React.FormEvent) => {
+        e.preventDefault();
+        try {
+            const res = await fetch('/api/admin/achievements', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({
+                    ...newAchievement,
+                    condition_value: parseInt(newAchievement.condition_value, 10)
+                })
+            });
+            if (res.ok) {
+                setNewAchievement({ name: '', description: '', icon: '🍺', condition_type: 'total_drinks', condition_value: '', condition_target: '' });
+                fetchAchievements();
+            }
+        } catch (err) {}
+    };
+
+    const deleteAchievement = async (id: number) => {
+        if (!confirm('Are you sure you want to delete this achievement?')) return;
+        try {
+            await fetch(`/api/admin/achievements/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            fetchAchievements();
+        } catch (err) {}
     };
 
     if (loading) return <div className="text-center text-zinc-500 font-mono tracking-widest uppercase mt-20 text-xs">Loading datastore...</div>;
@@ -523,6 +586,129 @@ export default function AdminDashboard() {
                         />
                         <button type="submit" className="bg-amber-500 text-black px-4 py-2 font-bold uppercase text-xs rounded hover:bg-amber-400">
                             Add
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Settings</h2>
+                <div className="flex flex-col sm:flex-row gap-4 items-end">
+                    <div className="flex-1">
+                        <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">Admin/Report Email</label>
+                        <input
+                            type="text"
+                            value={adminEmail}
+                            onChange={e => setAdminEmail(e.target.value)}
+                            className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                            placeholder="admin@example.com"
+                        />
+                    </div>
+                    <button
+                        onClick={updateAdminEmail}
+                        className="py-2 px-6 bg-amber-500 text-black font-bold uppercase text-xs rounded hover:bg-amber-400 transition-colors h-[38px]"
+                    >
+                        Save Email
+                    </button>
+                </div>
+            </div>
+
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Achievements Management</h2>
+                <div className="space-y-3 mb-8">
+                    {achievements.map((ach: any) => (
+                        <div key={ach.id} className="flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3">
+                            <div className="flex items-center gap-4">
+                                <div className="text-2xl">{ach.icon}</div>
+                                <div>
+                                    <div className="font-medium text-white">{ach.name}</div>
+                                    <div className="text-[10px] text-zinc-500">{ach.description}</div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                                <span className="text-amber-500 font-mono text-xs uppercase bg-amber-500/10 px-2 py-1 rounded">
+                                    {ach.condition_type}
+                                    {ach.condition_target && ` (${ach.condition_target})`}
+                                    {' '} &ge; {ach.condition_value}
+                                </span>
+                                <button
+                                    onClick={() => deleteAchievement(ach.id)}
+                                    className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500 transition-colors"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="pt-6 border-t border-[#2A2D35]">
+                    <h3 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-4">Add New Achievement</h3>
+                    <form onSubmit={createAchievement} className="flex flex-col gap-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <input
+                                type="text"
+                                placeholder="Name (e.g. Total Pro)"
+                                required
+                                value={newAchievement.name}
+                                onChange={e => setNewAchievement({...newAchievement, name: e.target.value})}
+                                className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                            />
+                            <input
+                                type="text"
+                                placeholder="Icon/Emoji (e.g. 🏆)"
+                                required
+                                value={newAchievement.icon}
+                                onChange={e => setNewAchievement({...newAchievement, icon: e.target.value})}
+                                className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                            />
+                        </div>
+                        <input
+                            type="text"
+                            placeholder="Description"
+                            required
+                            value={newAchievement.description}
+                            onChange={e => setNewAchievement({...newAchievement, description: e.target.value})}
+                            className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        />
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <select
+                                value={newAchievement.condition_type}
+                                onChange={e => setNewAchievement({...newAchievement, condition_type: e.target.value, condition_target: ''})}
+                                className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                            >
+                                <option value="total_drinks">Total Drinks</option>
+                                <option value="total_spent">Total Spent</option>
+                                <option value="color_drinks">By Color</option>
+                                <option value="specific_drink">Specific Drink</option>
+                            </select>
+                            {(newAchievement.condition_type === 'color_drinks' || newAchievement.condition_type === 'specific_drink') && (
+                                <select
+                                    value={newAchievement.condition_target}
+                                    onChange={e => setNewAchievement({...newAchievement, condition_target: e.target.value})}
+                                    className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                                    required
+                                >
+                                    <option value="" disabled>Select Target...</option>
+                                    {newAchievement.condition_type === 'color_drinks' && colors.map(c => (
+                                        <option key={c.name} value={c.name}>{c.name}</option>
+                                    ))}
+                                    {newAchievement.condition_type === 'specific_drink' && drinks.map(d => (
+                                        <option key={d.id} value={d.name}>{d.name}</option>
+                                    ))}
+                                </select>
+                            )}
+                            <input
+                                type="number"
+                                placeholder="Condition Value"
+                                required
+                                value={newAchievement.condition_value}
+                                onChange={e => setNewAchievement({...newAchievement, condition_value: e.target.value})}
+                                className="bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 font-mono"
+                            />
+                        </div>
+                        <button type="submit" className="mt-2 bg-amber-500 text-black px-4 py-2 font-bold uppercase text-xs rounded hover:bg-amber-400 self-start">
+                            Add Achievement
                         </button>
                     </form>
                 </div>

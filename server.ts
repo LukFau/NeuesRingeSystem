@@ -53,7 +53,40 @@ db.exec(`
                                                    paid_via_paypal BOOLEAN DEFAULT 0,
                                                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+                                            key TEXT PRIMARY KEY,
+                                            value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS achievements (
+                                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                name TEXT NOT NULL,
+                                                description TEXT NOT NULL,
+                                                icon TEXT NOT NULL,
+                                                condition_type TEXT NOT NULL,
+                                                condition_value INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_achievements (
+                                                     user_id INTEGER NOT NULL,
+                                                     achievement_id INTEGER NOT NULL,
+                                                     unlocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                                     PRIMARY KEY (user_id, achievement_id)
+        );
 `);
+
+// Insert default achievements if none exist
+const currentAchievements = db.prepare('SELECT COUNT(*) as count FROM achievements').get() as {count: number};
+if (currentAchievements && currentAchievements.count === 0) {
+    const defaultAchievements = [
+        ['First Sip', 'Buy your first drink', '🍺', 'total_drinks', 1],
+        ['Thirsty', 'Buy 10 drinks', '🐪', 'total_drinks', 10],
+        ['Big Spender', 'Spend 50€ in total', '💰', 'total_spent', 50]
+    ];
+    const insertAch = db.prepare('INSERT INTO achievements (name, description, icon, condition_type, condition_value) VALUES (?, ?, ?, ?, ?)');
+    defaultAchievements.forEach(a => insertAch.run(a));
+}
 
 // Ignore errors for alter table if columns already exist
 try { db.exec('ALTER TABLE drinks ADD COLUMN stock INTEGER NOT NULL DEFAULT 10'); } catch (e) {}
@@ -62,6 +95,7 @@ try { db.exec('ALTER TABLE drinks ADD COLUMN color_name TEXT'); } catch (e) {}
 try { db.exec("ALTER TABLE drinks ADD COLUMN category TEXT DEFAULT 'Softdrinks'"); } catch (e) {}
 try { db.exec('ALTER TABLE drinks ADD COLUMN is_active BOOLEAN DEFAULT 1'); } catch (e) {}
 try { db.exec('ALTER TABLE consumption_log ADD COLUMN paid_via_paypal BOOLEAN DEFAULT 0'); } catch (e) {}
+try { db.exec('ALTER TABLE achievements ADD COLUMN condition_target TEXT'); } catch (e) {}
 
 const colorCount = db.prepare('SELECT COUNT(*) as c FROM colors').get() as {c: number};
 if (colorCount.c === 0) {
@@ -222,6 +256,63 @@ app.get('/api/tallies/me', authenticateToken, (req, res) => {
     res.json({ colors: colorsStats, totalSpent, history });
 });
 
+function checkAchievements(userId: number) {
+    const achievements = db.prepare('SELECT * FROM achievements').all() as any[];
+    const userAchievements = db.prepare('SELECT achievement_id FROM user_achievements WHERE user_id = ?').all(userId) as any[];
+    const unlockedIds = new Set(userAchievements.map(ua => ua.achievement_id));
+
+    // Calculate user stats
+    const stats: any = db.prepare(`
+        SELECT
+            SUM(cl.quantity) as total_drinks,
+            SUM(cl.quantity * c.price) as total_spent
+        FROM consumption_log cl
+                 JOIN drinks d ON cl.drink_id = d.id
+                 LEFT JOIN colors c ON d.color_name = c.name
+        WHERE cl.user_id = ?
+    `).get(userId);
+
+    const drinkStats = db.prepare(`
+        SELECT d.id, d.name, c.name as color_name, SUM(cl.quantity) as quantity
+        FROM consumption_log cl
+        JOIN drinks d ON cl.drink_id = d.id
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE cl.user_id = ?
+        GROUP BY d.id
+    `).all(userId) as any[];
+
+    const colorStats: Record<string, number> = {};
+    const drinkNameStats: Record<string, number> = {};
+    drinkStats.forEach(ds => {
+        colorStats[ds.color_name] = (colorStats[ds.color_name] || 0) + ds.quantity;
+        drinkNameStats[ds.name] = (drinkNameStats[ds.name] || 0) + ds.quantity;
+    });
+
+    const checkAndUnlock = (ach: any, conditionMet: boolean) => {
+        if (conditionMet && !unlockedIds.has(ach.id)) {
+            db.prepare('INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)').run(userId, ach.id);
+            console.log(`User ${userId} unlocked achievement ${ach.name}`);
+        }
+    };
+
+    achievements.forEach(ach => {
+        switch (ach.condition_type) {
+            case 'total_drinks':
+                checkAndUnlock(ach, (stats?.total_drinks || 0) >= ach.condition_value);
+                break;
+            case 'total_spent':
+                checkAndUnlock(ach, (stats?.total_spent || 0) >= ach.condition_value);
+                break;
+            case 'color_drinks':
+                checkAndUnlock(ach, (colorStats[ach.condition_target] || 0) >= ach.condition_value);
+                break;
+            case 'specific_drink':
+                checkAndUnlock(ach, (drinkNameStats[ach.condition_target] || 0) >= ach.condition_value);
+                break;
+        }
+    });
+}
+
 app.post('/api/tallies', authenticateToken, (req, res) => {
     const userId = (req as any).user.id;
     const { drinkId, quantity, payViaPayPal } = req.body;
@@ -230,7 +321,16 @@ app.post('/api/tallies', authenticateToken, (req, res) => {
         db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, ?)').run(userId, drinkId, quantity, payViaPayPal ? 1 : 0);
     }
 
+    const drinkBefore = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
     db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(quantity, drinkId);
+    const drinkAfter = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
+
+    if (drinkBefore && drinkAfter && drinkBefore.stock > drinkBefore.min_stock && drinkAfter.stock <= drinkAfter.min_stock) {
+        sendLowStockAlert(drinkAfter.name, drinkAfter.stock, drinkAfter.min_stock).catch(console.error);
+    }
+
+    checkAchievements(userId);
+
     res.json({ success: true, payViaPayPal });
 });
 
@@ -238,7 +338,14 @@ app.post('/api/guest-checkout', (req, res) => {
     const { drinkId, quantity } = req.body;
     if (drinkId && quantity) {
         const qty = parseInt(quantity as any) || 1;
+        const drinkBefore = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
         db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(qty, drinkId);
+        const drinkAfter = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
+
+        if (drinkBefore && drinkAfter && drinkBefore.stock > drinkBefore.min_stock && drinkAfter.stock <= drinkAfter.min_stock) {
+            sendLowStockAlert(drinkAfter.name, drinkAfter.stock, drinkAfter.min_stock).catch(console.error);
+        }
+
         const guest = db.prepare("SELECT id FROM users WHERE username = 'guest'").get() as any;
         if (guest) {
             db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, 1)').run(guest.id, drinkId, qty);
@@ -351,6 +458,26 @@ function generateReportText(offsetMonths = 0) {
     return txt;
 }
 
+function getAdminEmail() {
+    const setting = db.prepare('SELECT value FROM settings WHERE key = ?').get('ADMIN_EMAIL') as {value: string};
+    return setting ? setting.value : (process.env.ADMIN_EMAIL || 'admin@example.com');
+}
+
+async function sendLowStockAlert(name: string, stock: number, minStock: number) {
+    const mailOptions = {
+        from: process.env.SMTP_USER || 'test@example.com',
+        to: getAdminEmail(),
+        subject: `Low Stock Alert: ${name}`,
+        text: `The stock for ${name} has dropped to ${stock}. The minimum stock level is set to ${minStock}. Please restock soon!`,
+    };
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`Low stock alert sent for ${name}`);
+    } catch (e) {
+        console.error('Failed to send low stock alert:', e);
+    }
+}
+
 async function sendReportEmail(offsetMonths = 0) {
     const reportText = generateReportText(offsetMonths);
 
@@ -362,7 +489,7 @@ async function sendReportEmail(offsetMonths = 0) {
 
     const mailOptions = {
         from: process.env.SMTP_USER || 'test@example.com',
-        to: process.env.ADMIN_EMAIL || 'admin@example.com',
+        to: getAdminEmail(),
         subject: 'Monthly Beverage Tally Report',
         text: 'Attached is the beverage consumption report.' + lowStockText,
         attachments: [
@@ -508,6 +635,74 @@ app.get('/api/admin/tallies', authenticateToken, isAdmin, (req, res) => {
 app.get('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
     const users = db.prepare('SELECT id, username, role FROM users').all();
     res.json(users);
+});
+
+// Settings endpoints
+app.get('/api/admin/settings', authenticateToken, isAdmin, (req, res) => {
+    const settings = db.prepare('SELECT * FROM settings').all();
+    res.json(settings);
+});
+
+app.put('/api/admin/settings', authenticateToken, isAdmin, (req, res) => {
+    const { key, value } = req.body;
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+    res.json({ success: true });
+});
+
+// Achievements admin endpoints
+app.get('/api/admin/achievements', authenticateToken, isAdmin, (req, res) => {
+    const achievements = db.prepare('SELECT * FROM achievements').all();
+    res.json(achievements);
+});
+
+app.post('/api/admin/achievements', authenticateToken, isAdmin, (req, res) => {
+    const { name, description, icon, condition_type, condition_value, condition_target } = req.body;
+    try {
+        const result = db.prepare('INSERT INTO achievements (name, description, icon, condition_type, condition_value, condition_target) VALUES (?, ?, ?, ?, ?, ?)').run(name, description, icon, condition_type, condition_value, condition_target || null);
+        res.json({ success: true, id: result.lastInsertRowid });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create achievement' });
+    }
+});
+
+app.put('/api/admin/achievements/:id', authenticateToken, isAdmin, (req, res) => {
+    const { id } = req.params;
+    const { name, description, icon, condition_type, condition_value, condition_target } = req.body;
+    try {
+        db.prepare('UPDATE achievements SET name = ?, description = ?, icon = ?, condition_type = ?, condition_value = ?, condition_target = ? WHERE id = ?').run(name, description, icon, condition_type, condition_value, condition_target || null, Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update achievement' });
+    }
+});
+
+app.delete('/api/admin/achievements/:id', authenticateToken, isAdmin, (req, res) => {
+    const { id } = req.params;
+    try {
+        db.prepare('DELETE FROM achievements WHERE id = ?').run(Number(id));
+        db.prepare('DELETE FROM user_achievements WHERE achievement_id = ?').run(Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete achievement' });
+    }
+});
+
+// User achievement endpoint
+app.get('/api/users/achievements', authenticateToken, (req, res) => {
+    const userId = (req as any).user.id;
+    const achievements = db.prepare('SELECT * FROM achievements').all() as any[];
+    const unlocked = db.prepare('SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = ?').all(userId) as any[];
+
+    // Map unlocked info
+    const unlockedMap = new Map(unlocked.map(u => [u.achievement_id, u.unlocked_at]));
+
+    const result = achievements.map(ach => ({
+        ...ach,
+        unlocked: unlockedMap.has(ach.id),
+        unlocked_at: unlockedMap.get(ach.id) || null
+    }));
+
+    res.json(result);
 });
 
 app.put('/api/admin/users/:id/password', authenticateToken, isAdmin, (req, res) => {
