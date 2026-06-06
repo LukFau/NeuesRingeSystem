@@ -6,7 +6,7 @@ import { Download, AlertTriangle, Save, Trash2, Power } from 'lucide-react';
 
 export default function AdminDashboard() {
     const { token } = useContext(AuthContext);
-    const [adminTallies, setAdminTallies] = useState<AdminTally[]>([]);
+    const [adminTallies, setAdminTallies] = useState<{booked: AdminTally[], paid: AdminTally[], totalBookedValue: number, totalPaidValue: number} | null>(null);
     const [drinks, setDrinks] = useState<Drink[]>([]);
     const [colors, setColors] = useState<Color[]>([]);
 
@@ -23,6 +23,10 @@ export default function AdminDashboard() {
     const [newAchievement, setNewAchievement] = useState({ name: '', description: '', icon: '🍺', condition_type: 'total_drinks', condition_value: '', condition_target: '' });
     const [settings, setSettings] = useState<any[]>([]);
     const [adminEmail, setAdminEmail] = useState('');
+    const [paypalUsername, setPaypalUsername] = useState('');
+    const [weroUsername, setWeroUsername] = useState('');
+    const [smtpUser, setSmtpUser] = useState('');
+    const [smtpPass, setSmtpPass] = useState('');
 
     const [loading, setLoading] = useState(true);
 
@@ -57,6 +61,14 @@ export default function AdminDashboard() {
             setSettings(data);
             const emailSetting = data.find((s: any) => s.key === 'ADMIN_EMAIL');
             if (emailSetting) setAdminEmail(emailSetting.value);
+            const paypalSetting = data.find((s: any) => s.key === 'PAYPAL_USERNAME');
+            if (paypalSetting) setPaypalUsername(paypalSetting.value);
+            const weroSetting = data.find((s: any) => s.key === 'WERO_USERNAME');
+            if (weroSetting) setWeroUsername(weroSetting.value);
+            const smtpUserSetting = data.find((s: any) => s.key === 'SMTP_USER');
+            if (smtpUserSetting) setSmtpUser(smtpUserSetting.value);
+            const smtpPassSetting = data.find((s: any) => s.key === 'SMTP_PASS');
+            if (smtpPassSetting) setSmtpPass(smtpPassSetting.value);
         } catch (err) {}
     };
 
@@ -274,6 +286,54 @@ export default function AdminDashboard() {
         } catch (err) { console.error(err); }
     };
 
+    const updatePaypalUsername = async () => {
+        try {
+            await fetch('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ key: 'PAYPAL_USERNAME', value: paypalUsername })
+            });
+            alert('PayPal username updated');
+            fetchSettings();
+        } catch (err) { console.error(err); }
+    };
+
+    const updateWeroUsername = async () => {
+        try {
+            await fetch('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ key: 'WERO_USERNAME', value: weroUsername })
+            });
+            alert('Wero identifier updated');
+            fetchSettings();
+        } catch (err) { console.error(err); }
+    };
+
+    const updateSmtpUser = async () => {
+        try {
+            await fetch('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ key: 'SMTP_USER', value: smtpUser })
+            });
+            alert('SMTP email updated');
+            fetchSettings();
+        } catch (err) { console.error(err); }
+    };
+
+    const updateSmtpPass = async () => {
+        try {
+            await fetch('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ key: 'SMTP_PASS', value: smtpPass })
+            });
+            alert('SMTP password updated');
+            fetchSettings();
+        } catch (err) { console.error(err); }
+    };
+
     const createAchievement = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
@@ -303,6 +363,8 @@ export default function AdminDashboard() {
         } catch (err) {}
     };
 
+    const [showAllUsers, setShowAllUsers] = useState(false);
+
     if (loading) return <div className="text-center text-zinc-500 font-mono tracking-widest uppercase mt-20 text-xs">Loading datastore...</div>;
 
     const uiColors: Record<string, string> = {
@@ -313,8 +375,67 @@ export default function AdminDashboard() {
         'Blau': '#3b82f6'
     };
 
+    const visibleUsers = showAllUsers ? users : users.slice(0, 5);
+
+    const renderTallyTable = (tallies: AdminTally[], title: string) => {
+        const safeTallies = Array.isArray(tallies) ? tallies : [];
+        return (
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">{title}</h2>
+                {safeTallies.length === 0 ? (
+                    <div className="text-zinc-500 font-mono text-sm">No drinks consumed here yet.</div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm text-zinc-400">
+                            <thead className="text-[10px] uppercase font-mono tracking-widest border-b border-[#2A2D35]">
+                            <tr>
+                                <th className="pb-3 font-medium text-zinc-500">User</th>
+                                {colors.map(c => (
+                                    <th key={c.name} className="pb-3 font-medium text-zinc-500 text-center">{c.name}</th>
+                                ))}
+                                <th className="pb-3 font-medium text-zinc-500 text-right">Total</th>
+                            </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#2A2D35]">
+                            {safeTallies.map((t, i) => (
+                                <tr key={i} className="hover:bg-[#15181E] transition-colors">
+                                    <td className="py-4 text-white font-medium">{t.username}</td>
+                                    {colors.map(c => (
+                                        <td key={c.name} className="py-4 text-center font-mono text-zinc-300">
+                                            {t.colors[c.name] || '-'}
+                                        </td>
+                                    ))}
+                                    <td className="py-4 text-right font-mono font-bold text-amber-500">€{(t.totalSpent || 0).toFixed(2)}</td>
+                                </tr>
+                            ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+        )};
+
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+            {/* Top 2 Tiles */}
+            {adminTallies && !Array.isArray(adminTallies) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl">
+                        <h3 className="text-amber-500 font-bold tracking-widest text-[10px] uppercase mb-2">Booked To Accounts (Unpaid)</h3>
+                        <div className="text-4xl text-white font-bold font-mono">€{(adminTallies.totalBookedValue || 0).toFixed(2)}</div>
+                    </div>
+                    <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl">
+                        <h3 className="text-emerald-500 font-bold tracking-widest text-[10px] uppercase mb-2">Paid Via PayPal/Wero</h3>
+                        <div className="text-4xl text-white font-bold font-mono">€{(adminTallies.totalPaidValue || 0).toFixed(2)}</div>
+                    </div>
+                </div>
+            )}
+
+            {/* Consumption Records: Booked & Paid */}
+            {adminTallies && !Array.isArray(adminTallies) && renderTallyTable(adminTallies.booked, "Consumption Record - Booked")}
+            {adminTallies && !Array.isArray(adminTallies) && renderTallyTable(adminTallies.paid, "Consumption Record - Paid (PayPal/Wero)")}
+            {adminTallies && Array.isArray(adminTallies) && renderTallyTable(adminTallies as unknown as AdminTally[], "Consumption Record")}
+
             <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
                 <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Color Price Management</h2>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
@@ -333,113 +454,6 @@ export default function AdminDashboard() {
                             </div>
                         </div>
                     ))}
-                </div>
-            </div>
-
-            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
-                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Global Consumption Record</h2>
-                {adminTallies.length === 0 ? (
-                    <div className="text-zinc-500 font-mono text-sm">No drinks consumed yet this month.</div>
-                ) : (
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm text-zinc-400">
-                            <thead className="text-[10px] uppercase font-mono tracking-widest border-b border-[#2A2D35]">
-                            <tr>
-                                <th className="pb-3 font-medium text-zinc-500">User</th>
-                                {colors.map(c => (
-                                    <th key={c.name} className="pb-3 font-medium text-zinc-500 text-center">{c.name}</th>
-                                ))}
-                                <th className="pb-3 font-medium text-zinc-500 text-right">Total</th>
-                            </tr>
-                            </thead>
-                            <tbody className="divide-y divide-[#2A2D35]">
-                            {adminTallies.map((t, i) => (
-                                <tr key={i} className="hover:bg-[#15181E] transition-colors">
-                                    <td className="py-4 text-white font-medium">{t.username}</td>
-                                    {colors.map(c => (
-                                        <td key={c.name} className="py-4 text-center font-mono text-zinc-300">
-                                            {t.colors[c.name] || '-'}
-                                        </td>
-                                    ))}
-                                    <td className="py-4 text-right font-mono font-bold text-amber-500">€{t.totalSpent.toFixed(2)}</td>
-                                </tr>
-                            ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </div>
-
-            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
-                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">User Management</h2>
-                <div className="space-y-3">
-                    {users.map(u => (
-                        <div key={u.id} className="flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3">
-                            <div className="font-medium flex items-center gap-2">
-                                {u.username} <span className="text-[10px] bg-[#1A1D24] text-zinc-400 px-2 py-0.5 rounded-full ml-2 uppercase font-bold tracking-widest">{u.role}</span>
-                            </div>
-                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                                <div className="flex items-center gap-2 text-xs w-full sm:w-auto">
-                                    <input
-                                        type="password"
-                                        placeholder="New Password"
-                                        value={passwords[u.id] || ''}
-                                        onChange={(e) => setPasswords({...passwords, [u.id]: e.target.value})}
-                                        className="w-full sm:w-40 bg-[#1A1D24] border border-[#2A2D35] rounded text-white px-3 py-1.5 outline-none focus:border-amber-500 placeholder-zinc-700"
-                                    />
-                                </div>
-                                <button
-                                    onClick={() => changeUserPassword(u.id)}
-                                    disabled={!passwords[u.id] || passwords[u.id].trim() === ''}
-                                    className="px-3 py-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-30 disabled:hover:border-[#2A2D35] disabled:hover:text-zinc-500 text-xs uppercase tracking-widest font-bold font-mono transition-colors"
-                                >
-                                    Update
-                                </button>
-                                {u.role !== 'admin' && (
-                                    <button
-                                        onClick={() => deleteUser(u.id)}
-                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500 transition-colors"
-                                        title="Delete User"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-
-                <div className="mt-8 pt-6 border-t border-[#2A2D35]">
-                    <h3 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-4">Add New User</h3>
-                    <form onSubmit={createUser} className="flex flex-col sm:flex-row gap-3">
-                        <input
-                            type="text"
-                            placeholder="Username"
-                            required
-                            value={newUser.username}
-                            onChange={e => setNewUser({...newUser, username: e.target.value})}
-                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
-                        />
-                        <input
-                            type="password"
-                            placeholder="Password"
-                            required
-                            value={newUser.password}
-                            onChange={e => setNewUser({...newUser, password: e.target.value})}
-                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
-                        />
-                        <select
-                            value={newUser.role}
-                            onChange={(e) => setNewUser({...newUser, role: e.target.value})}
-                            className="w-full sm:w-32 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
-                        >
-                            <option value="user">User</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                        <button type="submit" className="bg-amber-500 text-black px-4 py-2 font-bold uppercase text-xs rounded hover:bg-amber-400">
-                            Add
-                        </button>
-                    </form>
                 </div>
             </div>
 
@@ -592,24 +606,83 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
-                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Settings</h2>
-                <div className="flex flex-col sm:flex-row gap-4 items-end">
-                    <div className="flex-1">
-                        <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">Admin/Report Email</label>
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">User Management</h2>
+                <div className="space-y-3">
+                    {visibleUsers.map(u => (
+                        <div key={u.id} className="flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3">
+                            <div className="font-medium flex items-center gap-2">
+                                {u.username} <span className="text-[10px] bg-[#1A1D24] text-zinc-400 px-2 py-0.5 rounded-full ml-2 uppercase font-bold tracking-widest">{u.role}</span>
+                            </div>
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                                <div className="flex items-center gap-2 text-xs w-full sm:w-auto">
+                                    <input
+                                        type="password"
+                                        placeholder="New Password"
+                                        value={passwords[u.id] || ''}
+                                        onChange={(e) => setPasswords({...passwords, [u.id]: e.target.value})}
+                                        className="w-full sm:w-40 bg-[#1A1D24] border border-[#2A2D35] rounded text-white px-3 py-1.5 outline-none focus:border-amber-500 placeholder-zinc-700"
+                                    />
+                                </div>
+                                <button
+                                    onClick={() => changeUserPassword(u.id)}
+                                    disabled={!passwords[u.id] || passwords[u.id].trim() === ''}
+                                    className="px-3 py-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500 hover:text-amber-500 rounded text-zinc-500 disabled:opacity-30 disabled:hover:border-[#2A2D35] disabled:hover:text-zinc-500 text-xs uppercase tracking-widest font-bold font-mono transition-colors"
+                                >
+                                    Update
+                                </button>
+                                {u.role !== 'admin' && (
+                                    <button
+                                        onClick={() => deleteUser(u.id)}
+                                        className="p-1.5 bg-[#1A1D24] border border-[#2A2D35] hover:border-red-500 hover:text-red-500 rounded text-zinc-500 transition-colors"
+                                        title="Delete User"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                    {users.length > 5 && (
+                        <button
+                            onClick={() => setShowAllUsers(!showAllUsers)}
+                            className="w-full mt-4 py-3 bg-[#0F1115] border border-[#2A2D35] hover:border-amber-500/50 rounded-lg text-zinc-400 hover:text-amber-500 text-xs font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2"
+                        >
+                            {showAllUsers ? 'View Less' : `View All Users (${users.length})`}
+                        </button>
+                    )}
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-[#2A2D35]">
+                    <h3 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-4">Add New User</h3>
+                    <form onSubmit={createUser} className="flex flex-col sm:flex-row gap-3">
                         <input
                             type="text"
-                            value={adminEmail}
-                            onChange={e => setAdminEmail(e.target.value)}
-                            className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
-                            placeholder="admin@example.com"
+                            placeholder="Username"
+                            required
+                            value={newUser.username}
+                            onChange={e => setNewUser({...newUser, username: e.target.value})}
+                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
                         />
-                    </div>
-                    <button
-                        onClick={updateAdminEmail}
-                        className="py-2 px-6 bg-amber-500 text-black font-bold uppercase text-xs rounded hover:bg-amber-400 transition-colors h-[38px]"
-                    >
-                        Save Email
-                    </button>
+                        <input
+                            type="password"
+                            placeholder="Password"
+                            required
+                            value={newUser.password}
+                            onChange={e => setNewUser({...newUser, password: e.target.value})}
+                            className="flex-1 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        />
+                        <select
+                            value={newUser.role}
+                            onChange={(e) => setNewUser({...newUser, role: e.target.value})}
+                            className="w-full sm:w-32 bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                        >
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                        <button type="submit" className="bg-amber-500 text-black px-4 py-2 font-bold uppercase text-xs rounded hover:bg-amber-400">
+                            Add
+                        </button>
+                    </form>
                 </div>
             </div>
 
@@ -711,6 +784,111 @@ export default function AdminDashboard() {
                             Add Achievement
                         </button>
                     </form>
+                </div>
+            </div>
+
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-2xl relative">
+                <h2 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-black mb-6">Settings</h2>
+                <div className="flex flex-col gap-6">
+                    <div className="flex flex-col sm:flex-row gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">Admin/Report Email</label>
+                            <input
+                                type="text"
+                                value={adminEmail}
+                                onChange={e => setAdminEmail(e.target.value)}
+                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                                placeholder="admin@example.com"
+                            />
+                        </div>
+                        <button
+                            onClick={updateAdminEmail}
+                            className="py-2 px-6 bg-amber-500 text-black font-bold uppercase text-xs rounded hover:bg-amber-400 transition-colors h-[38px]"
+                        >
+                            Save
+                        </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">PayPal Username (e.g. yourname)</label>
+                            <input
+                                type="text"
+                                value={paypalUsername}
+                                onChange={e => setPaypalUsername(e.target.value)}
+                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                                placeholder="my-paypal-user"
+                            />
+                        </div>
+                        <button
+                            onClick={updatePaypalUsername}
+                            className="py-2 px-6 bg-[#0070BA] text-white font-bold uppercase text-xs rounded hover:bg-[#003087] transition-colors h-[38px]"
+                        >
+                            Save
+                        </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">Wero Phone Number / ID</label>
+                            <input
+                                type="text"
+                                value={weroUsername}
+                                onChange={e => setWeroUsername(e.target.value)}
+                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                                placeholder="+4915123456789"
+                            />
+                        </div>
+                        <button
+                            onClick={updateWeroUsername}
+                            className="py-2 px-6 bg-purple-600 text-white font-bold uppercase text-xs rounded hover:bg-purple-500 transition-colors h-[38px]"
+                        >
+                            Save
+                        </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">SMTP Email (Gmail)</label>
+                            <input
+                                type="text"
+                                value={smtpUser}
+                                onChange={e => setSmtpUser(e.target.value)}
+                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                                placeholder="your.email@gmail.com"
+                            />
+                        </div>
+                        <button
+                            onClick={updateSmtpUser}
+                            className="py-2 px-6 bg-amber-500 text-black font-bold uppercase text-xs rounded hover:bg-amber-400 transition-colors h-[38px]"
+                        >
+                            Save
+                        </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-2">
+                                SMTP App Password <br/>
+                                <span className="text-[9px] text-zinc-400 font-normal normal-case tracking-normal">
+                                    For Gmail: Requires 2-Step Verification. Go to your Google Account System Security &gt; App passwords to generate.
+                                </span>
+                            </label>
+                            <input
+                                type="password"
+                                value={smtpPass}
+                                onChange={e => setSmtpPass(e.target.value)}
+                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                                placeholder="16-character App Password"
+                            />
+                        </div>
+                        <button
+                            onClick={updateSmtpPass}
+                            className="py-2 px-6 bg-amber-500 text-black font-bold uppercase text-xs rounded hover:bg-amber-400 transition-colors h-[38px]"
+                        >
+                            Save
+                        </button>
+                    </div>
                 </div>
             </div>
 

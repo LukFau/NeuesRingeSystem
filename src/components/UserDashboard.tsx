@@ -5,13 +5,22 @@ import { UserStats } from '../types';
 import { Beer, Heart, TrendingUp } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, CartesianGrid } from 'recharts';
 
-export default function UserDashboard({ clearScan }: { clearScan: () => void }) {
+export default function UserDashboard({ clearScan, addToCart }: { clearScan: () => void, addToCart: (drink: any) => void }) {
     const { token } = useContext(AuthContext);
     const [stats, setStats] = useState<UserStats | null>(null);
     const [leaderboard, setLeaderboard] = useState<{username: string, total_drinks: number}[]>([]);
     const [leaderboardCategory, setLeaderboardCategory] = useState<string>('All');
     const [achievements, setAchievements] = useState<any[]>([]);
+    const [drinks, setDrinks] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
+
+    const fetchDrinks = async () => {
+        try {
+            const res = await fetch('/api/drinks');
+            const data = await res.json();
+            setDrinks(data);
+        } catch (err) {}
+    };
 
     const fetchTallies = async () => {
         try {
@@ -46,8 +55,8 @@ export default function UserDashboard({ clearScan }: { clearScan: () => void }) 
     }, [leaderboardCategory]);
 
     useEffect(() => {
-        Promise.all([fetchTallies(), fetchLeaderboard(), fetchAchievements()]).finally(() => setLoading(false));
-        const handleRefresh = () => { fetchTallies(); fetchLeaderboard(); fetchAchievements(); };
+        Promise.all([fetchTallies(), fetchLeaderboard(), fetchAchievements(), fetchDrinks()]).finally(() => setLoading(false));
+        const handleRefresh = () => { fetchTallies(); fetchLeaderboard(); fetchAchievements(); fetchDrinks(); };
         window.addEventListener('refresh-tallies', handleRefresh);
         return () => window.removeEventListener('refresh-tallies', handleRefresh);
     }, [token]);
@@ -93,6 +102,24 @@ export default function UserDashboard({ clearScan }: { clearScan: () => void }) 
 
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+            <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 shadow-xl relative">
+                <h3 className="text-zinc-500 text-xs font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <Beer className="w-4 h-4 text-amber-500" /> Quick Book
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                    {drinks.filter(d => d.is_active).map(drink => (
+                        <button
+                            key={drink.id}
+                            onClick={() => addToCart(drink)}
+                            className="bg-[#0F1115] border border-[#2A2D35] hover:border-amber-500/50 hover:bg-[#15181E] rounded-xl p-3 flex flex-col items-center justify-center gap-2 transition text-left relative overflow-hidden"
+                        >
+                            <div className="text-white text-xs font-bold text-center">{drink.name}</div>
+                            <div className="text-amber-500 font-mono text-[10px]">€{drink.price.toFixed(2)}</div>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-8">
                 <div className="bg-[#1A1D24] border border-[#2A2D35] rounded-2xl p-6 md:p-8 flex items-center justify-between shadow-2xl relative">
                     <div>

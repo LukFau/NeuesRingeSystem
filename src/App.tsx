@@ -115,7 +115,10 @@ export default function App() {
                         ) : user.role === 'admin' ? (
                             <AdminDashboard />
                         ) : (
-                            <UserDashboard clearScan={() => setCart([])} />
+                            <UserDashboard
+                                clearScan={() => setCart([])}
+                                addToCart={(drink) => setCart(prev => [...prev, { ...drink, type: 'drink', scannerId: 'manual' }])}
+                            />
                         )}
                     </div>
                 </main>

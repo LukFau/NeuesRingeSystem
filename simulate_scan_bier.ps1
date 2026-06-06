@@ -4,7 +4,7 @@ param(
 
 $AppUrl = $env:APP_URL
 if ([string]::IsNullOrEmpty($AppUrl)) {
-    $AppUrl = "http://localhost:3000"
+    $AppUrl = "https://localhost:3000"
 }
 
 $uri = "$AppUrl/api/scan"

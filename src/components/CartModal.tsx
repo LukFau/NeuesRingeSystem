@@ -18,6 +18,16 @@ export default function CartModal({ cart, setCart }: Props) {
     const [modalPassword, setModalPassword] = useState('');
     const [authError, setAuthError] = useState('');
 
+    const [paypalUser, setPaypalUser] = useState(import.meta.env.VITE_PAYPAL_USERNAME || 'exampleuser');
+    const [weroUser, setWeroUser] = useState('');
+
+    useEffect(() => {
+        fetch('/api/settings/public').then(r => r.json()).then(data => {
+            if (data.paypal_username) setPaypalUser(data.paypal_username);
+            if (data.wero_username) setWeroUser(data.wero_username);
+        }).catch(() => {});
+    }, []);
+
     // Group items by id
     const groupedCart = cart.reduce((acc, scan) => {
         if (scan.type === 'unknown') return acc; // Skip for now
@@ -77,35 +87,6 @@ export default function CartModal({ cart, setCart }: Props) {
 
     const clearAll = () => setCart([]);
 
-    const playChaChing = () => {
-        try {
-            const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-            if (!AudioContext) return;
-            const ctx = new AudioContext();
-
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-
-            // "Cha"
-            osc.frequency.setValueAtTime(1200, ctx.currentTime);
-            // "Ching"
-            osc.frequency.setValueAtTime(2000, ctx.currentTime + 0.1);
-            osc.frequency.exponentialRampToValueAtTime(1000, ctx.currentTime + 0.5);
-
-            gain.gain.setValueAtTime(0, ctx.currentTime);
-            gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
-            gain.gain.setValueAtTime(0.5, ctx.currentTime + 0.1);
-            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-
-            osc.start();
-            osc.stop(ctx.currentTime + 0.5);
-        } catch (e) {
-            console.error(e);
-        }
-    };
 
     const handleBuchen = async () => {
         if (!tempToken) return;
@@ -121,17 +102,37 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
-            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
             clearAll();
-            // Log the user out completely after buchen
-            logout();
+
+            // Only log out if it was a physical scan (not a manual Quick Book)
+            const isQuickBook = cart.every(i => i.scannerId === 'manual');
+            if (!isQuickBook) {
+                logout();
+            }
         } catch (err) {
             console.error(err);
         }
     };
 
-    const handleGuestCheckout = async () => {
+    const handlePaypalWeChat = (type: 'paypal_me' | 'paypal_webscr' | 'wero', items: any[]) => {
+        const totalPricePaypal = items.reduce((acc: any, item: any) => acc + item.price * item.quantity, 0).toFixed(2);
+
+        switch (type) {
+            case 'paypal_me':
+                window.open(`https://paypal.me/${paypalUser}/${totalPricePaypal}EUR`, '_blank');
+                break;
+            case 'paypal_webscr':
+                window.open(`https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=${paypalUser}&item_name=Drinks&amount=${totalPricePaypal}&currency_code=EUR`, '_blank');
+                break;
+            case 'wero':
+                // Wero typically uses a banking scheme deep link or a generic Wero link if supported, we can fallback to text copy/clipboard if we don't have deep link, but since we are trying payment solutions, providing standard scheme or informative alert if not deep linking.
+                alert(`Please send €${totalPricePaypal} via Wero to: ${weroUser}`);
+                break;
+        }
+    };
+
+    const handleGuestCheckout = async (payType?: 'paypal_me' | 'paypal_webscr' | 'wero') => {
         try {
             const promises = items.map(item =>
                 fetch('/api/guest-checkout', {
@@ -141,15 +142,18 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
-            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
-            setStep('qr');
+
+            if (payType) {
+                handlePaypalWeChat(payType, items);
+            }
+            clearAll();
         } catch (err) {
             console.error(err);
         }
     };
 
-    const handlePaypalCheckout = async () => {
+    const handlePaypalCheckout = async (payType: 'paypal_me' | 'paypal_webscr' | 'wero') => {
         if (!tempToken) return;
         try {
             const promises = items.map(item =>
@@ -163,11 +167,18 @@ export default function CartModal({ cart, setCart }: Props) {
                 })
             );
             await Promise.all(promises);
-            playChaChing();
             window.dispatchEvent(new Event('refresh-tallies'));
-            setStep('qr');
-            // Log out user completely when done
-            logout();
+
+            handlePaypalWeChat(payType, items);
+
+            // Clear cart/close popup
+            clearAll();
+
+            // Only log out if it was a physical scan (not a manual Quick Book)
+            const isQuickBook = cart.every(i => i.scannerId === 'manual');
+            if (!isQuickBook) {
+                logout();
+            }
         } catch (err) {
             console.error(err);
         }
@@ -189,7 +200,6 @@ export default function CartModal({ cart, setCart }: Props) {
     };
 
     const totalPrice = items.reduce((acc, item) => acc + item.price * item.quantity, 0).toFixed(2);
-    const paypalUser = import.meta.env.VITE_PAYPAL_USERNAME || 'exampleuser';
     const qrData = `https://paypal.me/${paypalUser}/${totalPrice}EUR`;
 
     return (
@@ -256,7 +266,9 @@ export default function CartModal({ cart, setCart }: Props) {
 
                 {step === 'cart' && (
                     <div className="w-full flex flex-col items-center mt-6">
-                        <span className="text-amber-500 font-mono text-xs tracking-tighter mb-4">SCANNED ITEMS</span>
+                        <span className="text-amber-500 font-mono text-xs tracking-tighter mb-4">
+                            {cart.every(i => i.scannerId === 'manual') ? 'QUICK BOOK CART' : 'SCANNED ITEMS'}
+                        </span>
 
                         <div className="w-full max-h-64 overflow-y-auto mb-6 space-y-3">
                             {items.map(item => (
@@ -275,7 +287,10 @@ export default function CartModal({ cart, setCart }: Props) {
                         </div>
 
                         <div className="text-sm font-mono text-zinc-400 mb-6 text-center">
-                            You can keep scanning barcodes...
+                            {(() => {
+                                const isQuickBook = cart.every(i => i.scannerId === 'manual');
+                                return isQuickBook ? 'Add more drinks or checkout' : 'You can keep scanning barcodes...';
+                            })()}
                         </div>
 
                         <div className="w-full space-y-3">
@@ -284,14 +299,32 @@ export default function CartModal({ cart, setCart }: Props) {
                                     <button onClick={handleBuchen} className="w-full py-5 bg-amber-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:bg-amber-400 transition-colors">
                                         Buchen (€{totalPrice})
                                     </button>
-                                    <button onClick={handlePaypalCheckout} className="w-full py-5 bg-emerald-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400 transition-colors">
-                                        Pay with PayPal (€{totalPrice})
+                                    <button onClick={() => handlePaypalCheckout('paypal_me')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
+                                        PayPal.me
                                     </button>
+                                    <button onClick={() => handlePaypalCheckout('paypal_webscr')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
+                                        PayPal Checkout (Mobile)
+                                    </button>
+                                    {weroUser && (
+                                        <button onClick={() => handlePaypalCheckout('wero')} className="w-full py-4 bg-purple-600 text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-purple-500 transition-colors">
+                                            Pay with Wero
+                                        </button>
+                                    )}
                                 </>
                             ) : (
-                                <button onClick={handleGuestCheckout} className="w-full py-5 bg-emerald-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400 transition-colors">
-                                    Bezahlen mit PayPal (€{totalPrice})
-                                </button>
+                                <>
+                                    <button onClick={() => handleGuestCheckout('paypal_me')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
+                                        Pay with PayPal.me
+                                    </button>
+                                    <button onClick={() => handleGuestCheckout('paypal_webscr')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
+                                        PayPal Checkout (Mobile)
+                                    </button>
+                                    {weroUser && (
+                                        <button onClick={() => handleGuestCheckout('wero')} className="w-full py-4 bg-purple-600 text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-purple-500 transition-colors">
+                                            Pay with Wero
+                                        </button>
+                                    )}
+                                </>
                             )}
                             <button onClick={clearAll} className="w-full text-zinc-500 hover:text-white py-3 font-bold uppercase tracking-widest text-[10px] transition-colors pt-4">
                                 Cancel All
@@ -303,12 +336,22 @@ export default function CartModal({ cart, setCart }: Props) {
                 {step === 'qr' && (
                     <div className="w-full flex flex-col items-center">
                         <h4 className="text-zinc-500 text-[10px] font-black uppercase tracking-[0.2em] mb-4 mt-6">Scan to Pay</h4>
-                        <div className="bg-white p-6 rounded-2xl mb-6 shadow-xl border-4 border-[#2A2D35]">
+                        <div className="bg-white p-6 rounded-2xl mb-6 shadow-xl border-4 border-[#2A2D35] hidden sm:block">
                             <QRCode value={qrData} size={180} />
                         </div>
-                        <p className="text-xs text-zinc-400 mb-8 px-4 text-center">
+                        <p className="text-xs text-zinc-400 mb-6 px-4 text-center hidden sm:block">
                             Scan with your phone to instantly pay <span className="text-white font-mono font-bold">€{totalPrice}</span> via PayPal.
                         </p>
+
+                        <a
+                            href={qrData}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full sm:hidden py-4 bg-[#0070BA] text-white font-bold rounded-xl uppercase hover:bg-[#003087] transition flex justify-center items-center mb-6"
+                        >
+                            Open PayPal (€{totalPrice})
+                        </a>
+
                         <div className="w-full space-y-3">
                             <button onClick={clearAll} className="w-full py-4 bg-zinc-800 text-white font-bold rounded-xl uppercase hover:bg-zinc-700 transition">
                                 Done

@@ -131,16 +131,22 @@ if (drinkCount.count === 0) {
     insertDrink.run('999000', 'Beer', 'Grün');
 }
 
-// Mailer setup
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: parseInt(process.env.SMTP_PORT || '587') === 465, // true for 465, false for other ports
-    auth: {
-        user: process.env.SMTP_USER || 'test@example.com',
-        pass: process.env.SMTP_PASS || 'password',
-    },
-});
+function getSetting(key: string, defaultVal: string) {
+    const setting = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as {value: string};
+    return setting ? setting.value : defaultVal;
+}
+
+function getTransporter() {
+    return nodemailer.createTransport({
+        host: getSetting('SMTP_HOST', process.env.SMTP_HOST || 'smtp.gmail.com'),
+        port: parseInt(getSetting('SMTP_PORT', process.env.SMTP_PORT || '587')),
+        secure: parseInt(getSetting('SMTP_PORT', process.env.SMTP_PORT || '587')) === 465,
+        auth: {
+            user: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
+            pass: getSetting('SMTP_PASS', process.env.SMTP_PASS || 'password'),
+        },
+    });
+}
 
 app.use(express.json());
 
@@ -275,8 +281,8 @@ function checkAchievements(userId: number) {
     const drinkStats = db.prepare(`
         SELECT d.id, d.name, c.name as color_name, SUM(cl.quantity) as quantity
         FROM consumption_log cl
-        JOIN drinks d ON cl.drink_id = d.id
-        LEFT JOIN colors c ON d.color_name = c.name
+                 JOIN drinks d ON cl.drink_id = d.id
+                 LEFT JOIN colors c ON d.color_name = c.name
         WHERE cl.user_id = ?
         GROUP BY d.id
     `).all(userId) as any[];
@@ -397,7 +403,7 @@ app.get('/api/scans/stream', (req, res) => {
     });
 });
 
-function generateAdminData(offsetMonths = 0) {
+function generateAdminData(offsetMonths = 0, paidViaPaypal = 0) {
     const { start, end } = getMonthBoundaries(offsetMonths);
     const logs = db.prepare(`
         SELECT u.username, d.color_name, c.price, SUM(c_log.quantity) as qty
@@ -405,9 +411,9 @@ function generateAdminData(offsetMonths = 0) {
                  JOIN users u ON c_log.user_id = u.id
                  JOIN drinks d ON c_log.drink_id = d.id
                  LEFT JOIN colors c ON d.color_name = c.name
-        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND c_log.paid_via_paypal = 0
+        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND c_log.paid_via_paypal = ?
         GROUP BY u.username, d.color_name
-    `).all(start, end) as any[];
+    `).all(start, end, paidViaPaypal) as any[];
 
     const userMaps: Record<string, any> = {};
     logs.forEach(row => {
@@ -422,40 +428,49 @@ function generateAdminData(offsetMonths = 0) {
 }
 
 function generateReportText(offsetMonths = 0) {
-    const data = generateAdminData(offsetMonths);
+    const bookedData = generateAdminData(offsetMonths, 0);
+    const paidData = generateAdminData(offsetMonths, 1);
     const allColorsLookup = db.prepare('SELECT name FROM colors').all() as any[];
     const colorNames = allColorsLookup.map(c => c.name);
 
     const headers = ['Username', ...colorNames, 'Total'];
-    const colWidths = headers.map(h => h.length);
 
-    data.forEach(row => {
-        colWidths[0] = Math.max(colWidths[0], String(row.username).length);
-        colorNames.forEach((c, idx) => {
-            colWidths[idx+1] = Math.max(colWidths[idx+1], String(row.colors[c] || 0).length);
+    const formatData = (data: any[], title: string) => {
+        if (data.length === 0) return `=== ${title} ===\nNo drinks recorded.\n\n`;
+
+        const colWidths = headers.map(h => h.length);
+        data.forEach(row => {
+            colWidths[0] = Math.max(colWidths[0], String(row.username).length);
+            colorNames.forEach((c, idx) => {
+                colWidths[idx+1] = Math.max(colWidths[idx+1], String(row.colors[c] || 0).length);
+            });
+            colWidths[colWidths.length - 1] = Math.max(colWidths[colWidths.length - 1], Number(row.totalSpent).toFixed(2).length);
         });
-        colWidths[colWidths.length - 1] = Math.max(colWidths[colWidths.length - 1], Number(row.totalSpent).toFixed(2).length);
-    });
 
-    const pad = (str: string, width: number, leftAlign: boolean = true) => {
-        if (leftAlign) return str.padEnd(width, ' ');
-        return str.padStart(width, ' ');
-    };
+        const pad = (str: string, width: number, leftAlign: boolean = true) => {
+            if (leftAlign) return str.padEnd(width, ' ');
+            return str.padStart(width, ' ');
+        };
 
-    let txt = '';
-    txt += headers.map((h, i) => pad(h, colWidths[i], i === 0)).join(' | ') + '\n';
-    txt += headers.map((_, i) => '-'.repeat(colWidths[i])).join('-+-') + '\n';
+        let txt = `=== ${title} ===\n`;
+        txt += headers.map((h, i) => pad(h, colWidths[i], i === 0)).join(' | ') + '\n';
+        txt += headers.map((_, i) => '-'.repeat(colWidths[i])).join('-+-') + '\n';
 
-    data.forEach(r => {
-        let rowTxt = pad(String(r.username), colWidths[0]) + ' | ';
-        colorNames.forEach((c, i) => {
-            rowTxt += pad(String(r.colors[c] || 0), colWidths[i+1], false) + ' | ';
+        data.forEach(r => {
+            let rowTxt = pad(String(r.username), colWidths[0]) + ' | ';
+            colorNames.forEach((c, i) => {
+                rowTxt += pad(String(r.colors[c] || 0), colWidths[i+1], false) + ' | ';
+            });
+            rowTxt += pad(Number(r.totalSpent).toFixed(2), colWidths[colWidths.length - 1], false) + '\n';
+            txt += rowTxt;
         });
-        rowTxt += pad(Number(r.totalSpent).toFixed(2), colWidths[colWidths.length - 1], false) + '\n';
-        txt += rowTxt;
-    });
 
-    return txt;
+        const totalSum = data.reduce((sum, r) => sum + r.totalSpent, 0);
+        txt += `\nTotal Value: €${totalSum.toFixed(2)}\n\n`;
+        return txt;
+    }
+
+    return formatData(bookedData, 'BOOKED (UNPAID) DRINKS') + formatData(paidData, 'DRINKS PAID VIA PAYPAL OR WERO');
 }
 
 function getAdminEmail() {
@@ -464,8 +479,9 @@ function getAdminEmail() {
 }
 
 async function sendLowStockAlert(name: string, stock: number, minStock: number) {
+    const transporter = getTransporter();
     const mailOptions = {
-        from: process.env.SMTP_USER || 'test@example.com',
+        from: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
         to: getAdminEmail(),
         subject: `Low Stock Alert: ${name}`,
         text: `The stock for ${name} has dropped to ${stock}. The minimum stock level is set to ${minStock}. Please restock soon!`,
@@ -473,12 +489,17 @@ async function sendLowStockAlert(name: string, stock: number, minStock: number) 
     try {
         await transporter.sendMail(mailOptions);
         console.log(`Low stock alert sent for ${name}`);
-    } catch (e) {
-        console.error('Failed to send low stock alert:', e);
+    } catch (e: any) {
+        if (e.message && e.message.includes('Application-specific password required')) {
+            console.error('Failed to send low stock alert: Gmail requires an Application-Specific Password. Please generate one at https://myaccount.google.com/apppasswords and set it in your SMTP settings.');
+        } else {
+            console.error('Failed to send low stock alert:', e.message || e);
+        }
     }
 }
 
 async function sendReportEmail(offsetMonths = 0) {
+    const transporter = getTransporter();
     const reportText = generateReportText(offsetMonths);
 
     const lowStockDrinks = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE stock <= min_stock').all() as any[];
@@ -488,7 +509,7 @@ async function sendReportEmail(offsetMonths = 0) {
     }
 
     const mailOptions = {
-        from: process.env.SMTP_USER || 'test@example.com',
+        from: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
         to: getAdminEmail(),
         subject: 'Monthly Beverage Tally Report',
         text: 'Attached is the beverage consumption report.' + lowStockText,
@@ -499,7 +520,15 @@ async function sendReportEmail(offsetMonths = 0) {
             }
         ]
     };
-    await transporter.sendMail(mailOptions);
+    try {
+        await transporter.sendMail(mailOptions);
+    } catch (e: any) {
+        if (e.message && e.message.includes('Application-specific password required')) {
+            console.error('Failed to send report email: Gmail requires an Application-Specific Password. Please generate one at https://myaccount.google.com/apppasswords and set it in your SMTP settings.');
+        } else {
+            console.error('Failed to send report email:', e.message || e);
+        }
+    }
 }
 
 app.put('/api/admin/colors/:name', authenticateToken, isAdmin, (req, res) => {
@@ -629,7 +658,13 @@ app.get('/api/leaderboard', authenticateToken, (req, res) => {
 });
 
 app.get('/api/admin/tallies', authenticateToken, isAdmin, (req, res) => {
-    res.json(generateAdminData());
+    const booked = generateAdminData(0, 0);
+    const paid = generateAdminData(0, 1);
+
+    const totalBookedValue = booked.reduce((acc, user) => acc + user.totalSpent, 0);
+    const totalPaidValue = paid.reduce((acc, user) => acc + user.totalSpent, 0);
+
+    res.json({ booked, paid, totalBookedValue, totalPaidValue });
 });
 
 app.get('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
@@ -638,6 +673,15 @@ app.get('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
 });
 
 // Settings endpoints
+app.get('/api/settings/public', (req, res) => {
+    const paypalSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('PAYPAL_USERNAME') as {value: string};
+    const weroSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('WERO_USERNAME') as {value: string};
+    res.json({
+        paypal_username: paypalSetting ? paypalSetting.value : (process.env.VITE_PAYPAL_USERNAME || ''),
+        wero_username: weroSetting ? weroSetting.value : ''
+    });
+});
+
 app.get('/api/admin/settings', authenticateToken, isAdmin, (req, res) => {
     const settings = db.prepare('SELECT * FROM settings').all();
     res.json(settings);
