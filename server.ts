@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import { createServer as createViteServer } from 'vite';
-import Database from 'better-sqlite3';
+import { Pool } from 'pg'; // PostgreSQL Treiber
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import bcrypt from 'bcryptjs';
@@ -12,217 +12,147 @@ import jwt from 'jsonwebtoken';
 import { EventEmitter } from 'events';
 
 const app = express();
-const PORT = 3000;
-const DB_PATH = './beverage.db';
+const PORT = parseInt(process.env.PORT || '3000');
 const scanEmitter = new EventEmitter();
 
-// Initialize DB
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
+// ==========================================
+// 1. DATENBANK INITIALISIERUNG
+// ==========================================
+const poolConfig = process.env.INSTANCE_UNIX_SOCKET
+    ? {
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        host: process.env.INSTANCE_UNIX_SOCKET,
+    }
+    : {
+        user: process.env.DB_USER || 'postgres',
+        password: process.env.DB_PASSWORD || '08Lukas06!', // Nur lokal!
+        database: process.env.DB_NAME || 'beverage_db',
+        host: process.env.DB_HOST || 'localhost',
+        port: parseInt(process.env.DB_PORT || '5432'),
+    };
 
-db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-                                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                         username TEXT UNIQUE NOT NULL,
-                                         password_hash TEXT NOT NULL,
-                                         role TEXT NOT NULL DEFAULT 'user'
-    );
+const db = new Pool(poolConfig);
 
-    CREATE TABLE IF NOT EXISTS colors (
-                                          name TEXT PRIMARY KEY,
-                                          price REAL NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS drinks (
-                                          id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                          barcode TEXT UNIQUE NOT NULL,
-                                          name TEXT NOT NULL,
-                                          color_name TEXT DEFAULT 'Rot',
-                                          category TEXT DEFAULT 'Softdrinks',
-                                          price REAL NOT NULL DEFAULT 0,
-                                          stock INTEGER NOT NULL DEFAULT 10,
-                                          min_stock INTEGER NOT NULL DEFAULT 5,
-                                          is_active BOOLEAN DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS consumption_log (
-                                                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                   user_id INTEGER NOT NULL,
-                                                   drink_id INTEGER NOT NULL,
-                                                   quantity INTEGER NOT NULL,
-                                                   paid_via_paypal BOOLEAN DEFAULT 0,
-                                                   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-                                            key TEXT PRIMARY KEY,
-                                            value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS achievements (
-                                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                name TEXT NOT NULL,
-                                                description TEXT NOT NULL,
-                                                icon TEXT NOT NULL,
-                                                condition_type TEXT NOT NULL,
-                                                condition_value INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS user_achievements (
-                                                     user_id INTEGER NOT NULL,
-                                                     achievement_id INTEGER NOT NULL,
-                                                     unlocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                                                     PRIMARY KEY (user_id, achievement_id)
+async function initDb() {
+    // Tabellen erstellen (komplett mit allen Feldern, keine ALTER TABLE Hacks mehr nötig)
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role VARCHAR(50) NOT NULL DEFAULT 'user'
         );
-`);
 
-// Insert default achievements if none exist
-const currentAchievements = db.prepare('SELECT COUNT(*) as count FROM achievements').get() as {count: number};
-if (currentAchievements && currentAchievements.count === 0) {
-    const defaultAchievements = [
-        ['First Sip', 'Buy your first drink', '🍺', 'total_drinks', 1],
-        ['Thirsty', 'Buy 10 drinks', '🐪', 'total_drinks', 10],
-        ['Big Spender', 'Spend 50€ in total', '💰', 'total_spent', 50]
-    ];
-    const insertAch = db.prepare('INSERT INTO achievements (name, description, icon, condition_type, condition_value) VALUES (?, ?, ?, ?, ?)');
-    defaultAchievements.forEach(a => insertAch.run(a));
+        CREATE TABLE IF NOT EXISTS colors (
+            name VARCHAR(50) PRIMARY KEY,
+            price DECIMAL(10, 2) NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS drinks (
+            id SERIAL PRIMARY KEY,
+            barcode VARCHAR(255) UNIQUE NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            color_name VARCHAR(50) DEFAULT 'Rot',
+            category VARCHAR(100) DEFAULT 'Softdrinks',
+            price DECIMAL(10, 2) NOT NULL DEFAULT 0,
+            stock INTEGER NOT NULL DEFAULT 10,
+            min_stock INTEGER NOT NULL DEFAULT 5,
+            is_active BOOLEAN DEFAULT true
+        );
+
+        CREATE TABLE IF NOT EXISTS consumption_log (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            drink_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            paid_via_paypal BOOLEAN DEFAULT false,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key VARCHAR(255) PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS achievements (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NOT NULL,
+            icon VARCHAR(50) NOT NULL,
+            condition_type VARCHAR(100) NOT NULL,
+            condition_value INTEGER NOT NULL,
+            condition_target VARCHAR(255)
+        );
+
+        CREATE TABLE IF NOT EXISTS user_achievements (
+            user_id INTEGER NOT NULL,
+            achievement_id INTEGER NOT NULL,
+            unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, achievement_id)
+        );
+    `);
+
+    // Standard-Erfolge einfügen
+    const { rows: currentAchievements } = await db.query('SELECT COUNT(*) as count FROM achievements');
+    if (parseInt(currentAchievements[0].count) === 0) {
+        const defaultAchievements = [
+            ['First Sip', 'Buy your first drink', '🍺', 'total_drinks', 1],
+            ['Thirsty', 'Buy 10 drinks', '🐪', 'total_drinks', 10],
+            ['Big Spender', 'Spend 50€ in total', '💰', 'total_spent', 50]
+        ];
+        for (const a of defaultAchievements) {
+            await db.query(
+                'INSERT INTO achievements (name, description, icon, condition_type, condition_value) VALUES ($1, $2, $3, $4, $5)',
+                a
+            );
+        }
+    }
+
+    // Farben einfügen
+    const { rows: colorCount } = await db.query('SELECT COUNT(*) as c FROM colors');
+    if (parseInt(colorCount[0].c) === 0) {
+        await db.query("INSERT INTO colors (name, price) VALUES ('Rot', 1.0), ('Braun', 1.5), ('Grün', 2.0), ('Schwarz', 2.5), ('Blau', 3.0)");
+    }
+
+    // Admin & Guest Nutzer
+    const adminHash = bcrypt.hashSync('admin', 10);
+    await db.query("INSERT INTO users (username, password_hash, role) VALUES ('admin', $1, 'admin') ON CONFLICT (username) DO NOTHING", [adminHash]);
+
+    const guestHash = bcrypt.hashSync('guest', 10);
+    await db.query("INSERT INTO users (username, password_hash, role) VALUES ('guest', $1, 'guest') ON CONFLICT (username) DO NOTHING", [guestHash]);
+
+    // Getränke einfügen
+    const { rows: drinkCount } = await db.query('SELECT COUNT(*) as count FROM drinks');
+    if (parseInt(drinkCount[0].count) === 0) {
+        await db.query("INSERT INTO drinks (barcode, name, color_name) VALUES ('999123', 'Club Mate', 'Rot'), ('999456', 'Cola', 'Braun'), ('999789', 'Water', 'Blau'), ('999000', 'Beer', 'Grün') ON CONFLICT (barcode) DO NOTHING");
+    }
+
+    console.log('Datenbank (PostgreSQL) erfolgreich initialisiert.');
 }
 
-// Ignore errors for alter table if columns already exist
-try { db.exec('ALTER TABLE drinks ADD COLUMN stock INTEGER NOT NULL DEFAULT 10'); } catch (e) {}
-try { db.exec('ALTER TABLE drinks ADD COLUMN min_stock INTEGER NOT NULL DEFAULT 5'); } catch (e) {}
-try { db.exec('ALTER TABLE drinks ADD COLUMN color_name TEXT'); } catch (e) {}
-try { db.exec("ALTER TABLE drinks ADD COLUMN category TEXT DEFAULT 'Softdrinks'"); } catch (e) {}
-try { db.exec('ALTER TABLE drinks ADD COLUMN is_active BOOLEAN DEFAULT 1'); } catch (e) {}
-try { db.exec('ALTER TABLE consumption_log ADD COLUMN paid_via_paypal BOOLEAN DEFAULT 0'); } catch (e) {}
-try { db.exec('ALTER TABLE achievements ADD COLUMN condition_target TEXT'); } catch (e) {}
-
-const colorCount = db.prepare('SELECT COUNT(*) as c FROM colors').get() as {c: number};
-if (colorCount.c === 0) {
-    const insertColor = db.prepare('INSERT INTO colors (name, price) VALUES (?, ?)');
-    insertColor.run('Rot', 1.0);
-    insertColor.run('Braun', 1.5);
-    insertColor.run('Grün', 2.0);
-    insertColor.run('Schwarz', 2.5);
-    insertColor.run('Blau', 3.0);
+// ==========================================
+// 2. HILFSFUNKTIONEN (Jetzt Asynchron)
+// ==========================================
+async function getSetting(key: string, defaultVal: string) {
+    const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key]);
+    return rows.length > 0 ? rows[0].value : defaultVal;
 }
 
-// Update existing drinks without color
-db.exec("UPDATE drinks SET color_name = 'Rot' WHERE color_name IS NULL");
+async function getTransporter() {
+    const host = await getSetting('SMTP_HOST', process.env.SMTP_HOST || 'smtp.gmail.com');
+    const port = parseInt(await getSetting('SMTP_PORT', process.env.SMTP_PORT || '587'));
+    const secure = port === 465;
+    const user = await getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com');
+    const pass = await getSetting('SMTP_PASS', process.env.SMTP_PASS || 'password');
 
-const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
-if (userCount.count === 0) {
-    const hash = bcrypt.hashSync('admin', 10);
-    db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run('admin', hash, 'admin');
-}
-
-const guestCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE username = 'guest'").get() as { count: number };
-if (guestCount.count === 0) {
-    const hash = bcrypt.hashSync('guest', 10);
-    db.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'guest')").run('guest', hash);
-}
-
-const drinkCount = db.prepare('SELECT COUNT(*) as count FROM drinks').get() as { count: number };
-if (drinkCount.count === 0) {
-    const insertDrink = db.prepare('INSERT INTO drinks (barcode, name, color_name) VALUES (?, ?, ?)');
-    insertDrink.run('999123', 'Club Mate', 'Rot');
-    insertDrink.run('999456', 'Cola', 'Braun');
-    insertDrink.run('999789', 'Water', 'Blau');
-    insertDrink.run('999000', 'Beer', 'Grün');
-}
-
-function getSetting(key: string, defaultVal: string) {
-    const setting = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as {value: string};
-    return setting ? setting.value : defaultVal;
-}
-
-function getTransporter() {
     return nodemailer.createTransport({
-        host: getSetting('SMTP_HOST', process.env.SMTP_HOST || 'smtp.gmail.com'),
-        port: parseInt(getSetting('SMTP_PORT', process.env.SMTP_PORT || '587')),
-        secure: parseInt(getSetting('SMTP_PORT', process.env.SMTP_PORT || '587')) === 465,
-        auth: {
-            user: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
-            pass: getSetting('SMTP_PASS', process.env.SMTP_PASS || 'password'),
-        },
+        host, port, secure,
+        auth: { user, pass },
     });
 }
 
-app.use(express.json());
-
-// Auth Middleware
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
-
-const authenticateToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        res.sendStatus(401);
-        return;
-    }
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            res.sendStatus(403);
-            return;
-        }
-        (req as any).user = user;
-        next();
-    });
-};
-
-const isAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if ((req as any).user?.role !== 'admin') {
-        res.sendStatus(403);
-        return;
-    }
-    next();
-};
-
-// API Routes
-app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as any;
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-        res.status(401).json({ error: 'Invalid credentials' });
-        return;
-    }
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
-});
-
-app.post('/api/auth/register', (req, res) => {
-    const { username, password } = req.body;
-    try {
-        const hash = bcrypt.hashSync(password, 10);
-        const info = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run(username, hash, 'user');
-        const token = jwt.sign({ id: info.lastInsertRowid, username, role: 'user' }, JWT_SECRET);
-        res.json({ token, user: { id: info.lastInsertRowid, username, role: 'user' } });
-    } catch (err: any) {
-        if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-            res.status(400).json({ error: 'Username taken' });
-        } else {
-            res.status(500).json({ error: 'Server error' });
-        }
-    }
-});
-
-app.get('/api/colors', (req, res) => {
-    const colors = db.prepare('SELECT * FROM colors').all();
-    res.json(colors);
-});
-
-app.get('/api/drinks', (req, res) => {
-    const drinks = db.prepare(`
-        SELECT d.*, c.price
-        FROM drinks d
-                 LEFT JOIN colors c ON d.color_name = c.name
-    `).all();
-    res.json(drinks);
-});
-
-// Helper to get current month boundaries, with optional offset
 function getMonthBoundaries(offsetMonths = 0) {
     const start = new Date();
     start.setMonth(start.getMonth() + offsetMonths);
@@ -235,18 +165,98 @@ function getMonthBoundaries(offsetMonths = 0) {
     return { start: start.toISOString(), end: end.toISOString() };
 }
 
-app.get('/api/tallies/me', authenticateToken, (req, res) => {
+// ==========================================
+// 3. MIDDLEWARE
+// ==========================================
+app.use(express.json());
+
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+
+const authenticateToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) { res.sendStatus(401); return; }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) { res.sendStatus(403); return; }
+        (req as any).user = user;
+        next();
+    });
+};
+
+const isAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if ((req as any).user?.role !== 'admin') { res.sendStatus(403); return; }
+    next();
+};
+
+// ==========================================
+// 4. API ROUTEN
+// ==========================================
+
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const { rows } = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = rows[0];
+
+        if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+            res.status(401).json({ error: 'Invalid credentials' });
+            return;
+        }
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
+        res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+    } catch (err) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const hash = bcrypt.hashSync(password, 10);
+        // RETURNING id gibt die eingefügte ID zurück (wie lastInsertRowid)
+        const { rows } = await db.query(
+            'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
+            [username, hash, 'user']
+        );
+        const newId = rows[0].id;
+        const token = jwt.sign({ id: newId, username, role: 'user' }, JWT_SECRET);
+        res.json({ token, user: { id: newId, username, role: 'user' } });
+    } catch (err: any) {
+        if (err.code === '23505') { // Postgres Unique Constraint Violation
+            res.status(400).json({ error: 'Username taken' });
+        } else {
+            res.status(500).json({ error: 'Server error' });
+        }
+    }
+});
+
+app.get('/api/colors', async (req, res) => {
+    const { rows } = await db.query('SELECT * FROM colors');
+    res.json(rows);
+});
+
+app.get('/api/drinks', async (req, res) => {
+    const { rows } = await db.query(`
+        SELECT d.*, c.price
+        FROM drinks d
+        LEFT JOIN colors c ON d.color_name = c.name
+    `);
+    res.json(rows);
+});
+
+app.get('/api/tallies/me', authenticateToken, async (req, res) => {
     const userId = (req as any).user.id;
     const { start, end } = getMonthBoundaries();
 
-    const history = db.prepare(`
+    const { rows: history } = await db.query(`
         SELECT c_log.id, d.name as drink_name, d.color_name, c.price, c_log.created_at as date, c_log.quantity, c_log.paid_via_paypal
         FROM consumption_log c_log
-            JOIN drinks d ON c_log.drink_id = d.id
-            LEFT JOIN colors c ON d.color_name = c.name
-        WHERE c_log.user_id = ? AND c_log.created_at >= ? AND c_log.created_at < ?
+        JOIN drinks d ON c_log.drink_id = d.id
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE c_log.user_id = $1 AND c_log.created_at >= $2 AND c_log.created_at < $3
         ORDER BY c_log.created_at DESC
-    `).all(userId, start, end) as any[];
+    `, [userId, start, end]);
 
     const colorsStats: Record<string, number> = {};
     let totalSpent = 0;
@@ -255,134 +265,135 @@ app.get('/api/tallies/me', authenticateToken, (req, res) => {
         if (!colorsStats[log.color_name]) colorsStats[log.color_name] = 0;
         colorsStats[log.color_name] += log.quantity;
         if (!log.paid_via_paypal) {
-            totalSpent += (log.price || 0) * log.quantity;
+            totalSpent += (Number(log.price) || 0) * log.quantity;
         }
     });
 
     res.json({ colors: colorsStats, totalSpent, history });
 });
 
-function checkAchievements(userId: number) {
-    const achievements = db.prepare('SELECT * FROM achievements').all() as any[];
-    const userAchievements = db.prepare('SELECT achievement_id FROM user_achievements WHERE user_id = ?').all(userId) as any[];
+async function checkAchievements(userId: number) {
+    const { rows: achievements } = await db.query('SELECT * FROM achievements');
+    const { rows: userAchievements } = await db.query('SELECT achievement_id FROM user_achievements WHERE user_id = $1', [userId]);
     const unlockedIds = new Set(userAchievements.map(ua => ua.achievement_id));
 
-    // Calculate user stats
-    const stats: any = db.prepare(`
+    const { rows: statsRows } = await db.query(`
         SELECT
             SUM(cl.quantity) as total_drinks,
             SUM(cl.quantity * c.price) as total_spent
         FROM consumption_log cl
-                 JOIN drinks d ON cl.drink_id = d.id
-                 LEFT JOIN colors c ON d.color_name = c.name
-        WHERE cl.user_id = ?
-    `).get(userId);
+        JOIN drinks d ON cl.drink_id = d.id
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE cl.user_id = $1
+    `, [userId]);
+    const stats = statsRows[0];
 
-    const drinkStats = db.prepare(`
+    const { rows: drinkStats } = await db.query(`
         SELECT d.id, d.name, c.name as color_name, SUM(cl.quantity) as quantity
         FROM consumption_log cl
-                 JOIN drinks d ON cl.drink_id = d.id
-                 LEFT JOIN colors c ON d.color_name = c.name
-        WHERE cl.user_id = ?
-        GROUP BY d.id
-    `).all(userId) as any[];
+        JOIN drinks d ON cl.drink_id = d.id
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE cl.user_id = $1
+        GROUP BY d.id, c.name
+    `, [userId]);
 
     const colorStats: Record<string, number> = {};
     const drinkNameStats: Record<string, number> = {};
     drinkStats.forEach(ds => {
-        colorStats[ds.color_name] = (colorStats[ds.color_name] || 0) + ds.quantity;
-        drinkNameStats[ds.name] = (drinkNameStats[ds.name] || 0) + ds.quantity;
+        colorStats[ds.color_name] = (colorStats[ds.color_name] || 0) + Number(ds.quantity);
+        drinkNameStats[ds.name] = (drinkNameStats[ds.name] || 0) + Number(ds.quantity);
     });
 
-    const checkAndUnlock = (ach: any, conditionMet: boolean) => {
+    const checkAndUnlock = async (ach: any, conditionMet: boolean) => {
         if (conditionMet && !unlockedIds.has(ach.id)) {
-            db.prepare('INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)').run(userId, ach.id);
+            await db.query('INSERT INTO user_achievements (user_id, achievement_id) VALUES ($1, $2)', [userId, ach.id]);
             console.log(`User ${userId} unlocked achievement ${ach.name}`);
         }
     };
 
-    achievements.forEach(ach => {
+    for (const ach of achievements) {
         switch (ach.condition_type) {
-            case 'total_drinks':
-                checkAndUnlock(ach, (stats?.total_drinks || 0) >= ach.condition_value);
-                break;
-            case 'total_spent':
-                checkAndUnlock(ach, (stats?.total_spent || 0) >= ach.condition_value);
-                break;
-            case 'color_drinks':
-                checkAndUnlock(ach, (colorStats[ach.condition_target] || 0) >= ach.condition_value);
-                break;
-            case 'specific_drink':
-                checkAndUnlock(ach, (drinkNameStats[ach.condition_target] || 0) >= ach.condition_value);
-                break;
+            case 'total_drinks': await checkAndUnlock(ach, (Number(stats?.total_drinks) || 0) >= ach.condition_value); break;
+            case 'total_spent': await checkAndUnlock(ach, (Number(stats?.total_spent) || 0) >= ach.condition_value); break;
+            case 'color_drinks': await checkAndUnlock(ach, (colorStats[ach.condition_target] || 0) >= ach.condition_value); break;
+            case 'specific_drink': await checkAndUnlock(ach, (drinkNameStats[ach.condition_target] || 0) >= ach.condition_value); break;
         }
-    });
+    }
 }
 
-app.post('/api/tallies', authenticateToken, (req, res) => {
+app.post('/api/tallies', authenticateToken, async (req, res) => {
     const userId = (req as any).user.id;
     const { drinkId, quantity, payViaPayPal } = req.body;
 
     if (quantity > 0) {
-        db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, ?)').run(userId, drinkId, quantity, payViaPayPal ? 1 : 0);
+        await db.query(
+            'INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES ($1, $2, $3, $4)',
+            [userId, drinkId, quantity, payViaPayPal ? true : false]
+        );
     }
 
-    const drinkBefore = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
-    db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(quantity, drinkId);
-    const drinkAfter = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
+    const { rows: beforeRows } = await db.query('SELECT name, stock, min_stock FROM drinks WHERE id = $1', [drinkId]);
+    const drinkBefore = beforeRows[0];
+
+    await db.query('UPDATE drinks SET stock = stock - $1 WHERE id = $2', [quantity, drinkId]);
+
+    const { rows: afterRows } = await db.query('SELECT name, stock, min_stock FROM drinks WHERE id = $1', [drinkId]);
+    const drinkAfter = afterRows[0];
 
     if (drinkBefore && drinkAfter && drinkBefore.stock > drinkBefore.min_stock && drinkAfter.stock <= drinkAfter.min_stock) {
         sendLowStockAlert(drinkAfter.name, drinkAfter.stock, drinkAfter.min_stock).catch(console.error);
     }
 
-    checkAchievements(userId);
-
+    await checkAchievements(userId);
     res.json({ success: true, payViaPayPal });
 });
 
-app.post('/api/guest-checkout', (req, res) => {
+app.post('/api/guest-checkout', async (req, res) => {
     const { drinkId, quantity } = req.body;
     if (drinkId && quantity) {
         const qty = parseInt(quantity as any) || 1;
-        const drinkBefore = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
-        db.prepare('UPDATE drinks SET stock = stock - ? WHERE id = ?').run(qty, drinkId);
-        const drinkAfter = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE id = ?').get(drinkId) as any;
+        const { rows: beforeRows } = await db.query('SELECT name, stock, min_stock FROM drinks WHERE id = $1', [drinkId]);
+        const drinkBefore = beforeRows[0];
+
+        await db.query('UPDATE drinks SET stock = stock - $1 WHERE id = $2', [qty, drinkId]);
+
+        const { rows: afterRows } = await db.query('SELECT name, stock, min_stock FROM drinks WHERE id = $1', [drinkId]);
+        const drinkAfter = afterRows[0];
 
         if (drinkBefore && drinkAfter && drinkBefore.stock > drinkBefore.min_stock && drinkAfter.stock <= drinkAfter.min_stock) {
             sendLowStockAlert(drinkAfter.name, drinkAfter.stock, drinkAfter.min_stock).catch(console.error);
         }
 
-        const guest = db.prepare("SELECT id FROM users WHERE username = 'guest'").get() as any;
+        const { rows: guestRows } = await db.query("SELECT id FROM users WHERE username = 'guest'");
+        const guest = guestRows[0];
         if (guest) {
-            db.prepare('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES (?, ?, ?, 1)').run(guest.id, drinkId, qty);
+            await db.query('INSERT INTO consumption_log (user_id, drink_id, quantity, paid_via_paypal) VALUES ($1, $2, $3, true)', [guest.id, drinkId, qty]);
         }
     }
     res.json({ success: true, message: 'Guest checkout initiated' });
 });
 
-app.post('/api/scan', (req, res) => {
+app.post('/api/scan', async (req, res) => {
     const { barcode, source } = req.body;
     console.log('Received scan:', barcode);
-    const drink = db.prepare(`
+
+    const { rows } = await db.query(`
         SELECT d.*, c.price
         FROM drinks d
-                 LEFT JOIN colors c ON d.color_name = c.name
-        WHERE d.barcode = ?
-    `).get(barcode) as any;
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE d.barcode = $1
+    `, [barcode]);
+    const drink = rows[0];
 
     if (drink) {
         console.log('Found drink:', drink.name);
         const scanEvent = { ...drink, type: 'known', timestamp: new Date().toISOString() };
-        if (source !== 'mobile') {
-            scanEmitter.emit('scan', scanEvent);
-        }
+        if (source !== 'mobile') scanEmitter.emit('scan', scanEvent);
         res.json({ success: true, drink: scanEvent });
     } else {
         console.log('Unknown barcode:', barcode);
         const scanEvent = { type: 'unknown', barcode, timestamp: new Date().toISOString() };
-        if (source !== 'mobile') {
-            scanEmitter.emit('scan', scanEvent);
-        }
+        if (source !== 'mobile') scanEmitter.emit('scan', scanEvent);
         res.status(404).json({ error: 'Drink not found', barcode, scanEvent });
     }
 });
@@ -403,34 +414,34 @@ app.get('/api/scans/stream', (req, res) => {
     });
 });
 
-function generateAdminData(offsetMonths = 0, paidViaPaypal = 0) {
+async function generateAdminData(offsetMonths = 0, paidViaPaypal = false) {
     const { start, end } = getMonthBoundaries(offsetMonths);
-    const logs = db.prepare(`
+    const { rows: logs } = await db.query(`
         SELECT u.username, d.color_name, c.price, SUM(c_log.quantity) as qty
         FROM consumption_log c_log
-                 JOIN users u ON c_log.user_id = u.id
-                 JOIN drinks d ON c_log.drink_id = d.id
-                 LEFT JOIN colors c ON d.color_name = c.name
-        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND c_log.paid_via_paypal = ?
-        GROUP BY u.username, d.color_name
-    `).all(start, end, paidViaPaypal) as any[];
+        JOIN users u ON c_log.user_id = u.id
+        JOIN drinks d ON c_log.drink_id = d.id
+        LEFT JOIN colors c ON d.color_name = c.name
+        WHERE c_log.created_at >= $1 AND c_log.created_at < $2 AND c_log.paid_via_paypal = $3
+        GROUP BY u.username, d.color_name, c.price
+    `, [start, end, paidViaPaypal]);
 
     const userMaps: Record<string, any> = {};
     logs.forEach(row => {
         if (!userMaps[row.username]) {
             userMaps[row.username] = { username: row.username, colors: {}, totalSpent: 0 };
         }
-        userMaps[row.username].colors[row.color_name] = row.qty;
-        userMaps[row.username].totalSpent += (row.price || 0) * row.qty;
+        userMaps[row.username].colors[row.color_name] = Number(row.qty);
+        userMaps[row.username].totalSpent += (Number(row.price) || 0) * Number(row.qty);
     });
 
     return Object.values(userMaps).sort((a, b) => a.username.localeCompare(b.username));
 }
 
-function generateReportText(offsetMonths = 0) {
-    const bookedData = generateAdminData(offsetMonths, 0);
-    const paidData = generateAdminData(offsetMonths, 1);
-    const allColorsLookup = db.prepare('SELECT name FROM colors').all() as any[];
+async function generateReportText(offsetMonths = 0) {
+    const bookedData = await generateAdminData(offsetMonths, false);
+    const paidData = await generateAdminData(offsetMonths, true);
+    const { rows: allColorsLookup } = await db.query('SELECT name FROM colors');
     const colorNames = allColorsLookup.map(c => c.name);
 
     const headers = ['Username', ...colorNames, 'Total'];
@@ -473,16 +484,15 @@ function generateReportText(offsetMonths = 0) {
     return formatData(bookedData, 'BOOKED (UNPAID) DRINKS') + formatData(paidData, 'DRINKS PAID VIA PAYPAL OR WERO');
 }
 
-function getAdminEmail() {
-    const setting = db.prepare('SELECT value FROM settings WHERE key = ?').get('ADMIN_EMAIL') as {value: string};
-    return setting ? setting.value : (process.env.ADMIN_EMAIL || 'admin@example.com');
+async function getAdminEmail() {
+    return await getSetting('ADMIN_EMAIL', process.env.ADMIN_EMAIL || 'admin@example.com');
 }
 
 async function sendLowStockAlert(name: string, stock: number, minStock: number) {
-    const transporter = getTransporter();
+    const transporter = await getTransporter();
     const mailOptions = {
-        from: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
-        to: getAdminEmail(),
+        from: await getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
+        to: await getAdminEmail(),
         subject: `Low Stock Alert: ${name}`,
         text: `The stock for ${name} has dropped to ${stock}. The minimum stock level is set to ${minStock}. Please restock soon!`,
     };
@@ -490,130 +500,104 @@ async function sendLowStockAlert(name: string, stock: number, minStock: number) 
         await transporter.sendMail(mailOptions);
         console.log(`Low stock alert sent for ${name}`);
     } catch (e: any) {
-        if (e.message && e.message.includes('Application-specific password required')) {
-            console.error('Failed to send low stock alert: Gmail requires an Application-Specific Password. Please generate one at https://myaccount.google.com/apppasswords and set it in your SMTP settings.');
-        } else {
-            console.error('Failed to send low stock alert:', e.message || e);
-        }
+        console.error('Failed to send low stock alert:', e.message || e);
     }
 }
 
 async function sendReportEmail(offsetMonths = 0) {
-    const transporter = getTransporter();
-    const reportText = generateReportText(offsetMonths);
+    const transporter = await getTransporter();
+    const reportText = await generateReportText(offsetMonths);
 
-    const lowStockDrinks = db.prepare('SELECT name, stock, min_stock FROM drinks WHERE stock <= min_stock').all() as any[];
+    const { rows: lowStockDrinks } = await db.query('SELECT name, stock, min_stock FROM drinks WHERE stock <= min_stock');
     let lowStockText = '';
     if (lowStockDrinks.length > 0) {
         lowStockText = '\n\nLOW STOCK ALERT:\n' + lowStockDrinks.map(d => `- ${d.name}: ${d.stock} remaining (min: ${d.min_stock})`).join('\n');
     }
 
     const mailOptions = {
-        from: getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
-        to: getAdminEmail(),
+        from: await getSetting('SMTP_USER', process.env.SMTP_USER || 'test@example.com'),
+        to: await getAdminEmail(),
         subject: 'Monthly Beverage Tally Report',
         text: 'Attached is the beverage consumption report.' + lowStockText,
         attachments: [
-            {
-                filename: `tally_report_${new Date().toISOString().split('T')[0]}.txt`,
-                content: reportText
-            }
+            { filename: `tally_report_${new Date().toISOString().split('T')[0]}.txt`, content: reportText }
         ]
     };
     try {
         await transporter.sendMail(mailOptions);
     } catch (e: any) {
-        if (e.message && e.message.includes('Application-specific password required')) {
-            console.error('Failed to send report email: Gmail requires an Application-Specific Password. Please generate one at https://myaccount.google.com/apppasswords and set it in your SMTP settings.');
-        } else {
-            console.error('Failed to send report email:', e.message || e);
-        }
+        console.error('Failed to send report email:', e.message || e);
     }
 }
 
-app.put('/api/admin/colors/:name', authenticateToken, isAdmin, (req, res) => {
+// ==========================================
+// 5. ADMIN ROUTEN
+// ==========================================
+
+app.put('/api/admin/colors/:name', authenticateToken, isAdmin, async (req, res) => {
     const { name } = req.params;
     const { price } = req.body;
     if (price !== undefined) {
-        db.prepare('UPDATE colors SET price = ? WHERE name = ?').run(Number(price), name);
+        await db.query('UPDATE colors SET price = $1 WHERE name = $2', [Number(price), name]);
     }
     res.json({ success: true });
 });
 
-app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
+app.put('/api/admin/drinks/:id', authenticateToken, isAdmin, async (req, res) => {
     const { id } = req.params;
     const { color_name, stock, is_active, category } = req.body;
     try {
-        let query = 'UPDATE drinks SET ';
-        const params: any[] = [];
-        if (color_name !== undefined) {
-            query += 'color_name = ?';
-            params.push(color_name);
-        }
-        if (category !== undefined) {
-            if (params.length > 0) query += ', ';
-            query += 'category = ?';
-            params.push(category);
-        }
-        if (stock !== undefined) {
-            if (params.length > 0) query += ', ';
-            query += 'stock = ?';
-            params.push(Number(stock));
-        }
-        if (is_active !== undefined) {
-            if (params.length > 0) query += ', ';
-            query += 'is_active = ?';
-            params.push(is_active ? 1 : 0);
-        }
-        if (params.length === 0) return res.json({ success: true });
+        const updates = [];
+        const params = [];
 
-        query += ' WHERE id = ?';
+        if (color_name !== undefined) { params.push(color_name); updates.push(`color_name = $${params.length}`); }
+        if (category !== undefined) { params.push(category); updates.push(`category = $${params.length}`); }
+        if (stock !== undefined) { params.push(Number(stock)); updates.push(`stock = $${params.length}`); }
+        if (is_active !== undefined) { params.push(is_active); updates.push(`is_active = $${params.length}`); }
+
+        if (updates.length === 0) return res.json({ success: true });
+
         params.push(Number(id));
+        const query = `UPDATE drinks SET ${updates.join(', ')} WHERE id = $${params.length}`;
 
-        db.prepare(query).run(...params);
+        await db.query(query, params);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Database update failed' });
     }
 });
 
-app.delete('/api/admin/drinks/:id', authenticateToken, isAdmin, (req, res) => {
-    const { id } = req.params;
+app.delete('/api/admin/drinks/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
-        db.prepare('DELETE FROM drinks WHERE id = ?').run(Number(id));
+        await db.query('DELETE FROM drinks WHERE id = $1', [Number(req.params.id)]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Database delete failed' });
     }
 });
 
-app.post('/api/admin/drinks', authenticateToken, isAdmin, (req, res) => {
+app.post('/api/admin/drinks', authenticateToken, isAdmin, async (req, res) => {
     const { name, color_name, category, stock, barcode } = req.body;
     try {
-        const result = db.prepare('INSERT INTO drinks (barcode, name, color_name, category, stock, price) VALUES (?, ?, ?, ?, ?, ?)').run(
-            barcode || String(Date.now()),
-            name,
-            color_name || 'Rot',
-            category || 'Softdrinks',
-            Number(stock || 0),
-            0
+        const { rows } = await db.query(
+            'INSERT INTO drinks (barcode, name, color_name, category, stock, price) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+            [barcode || String(Date.now()), name, color_name || 'Rot', category || 'Softdrinks', Number(stock || 0), 0]
         );
-        res.json({ success: true, id: result.lastInsertRowid });
+        res.json({ success: true, id: rows[0].id });
     } catch (err: any) {
-        console.error('Drinks Create Error:', err);
         res.status(500).json({ error: err.message || 'Failed to create drink' });
     }
 });
 
-app.get('/api/admin/debug/report', authenticateToken, isAdmin, (req, res) => {
+app.get('/api/admin/debug/report', authenticateToken, isAdmin, async (req, res) => {
     const offset = parseInt(req.query.offset as string) || 0;
-    const txt = generateReportText(offset);
+    const txt = await generateReportText(offset);
     res.json({ report: txt });
 });
 
-app.delete('/api/admin/debug/wipe', authenticateToken, isAdmin, (req, res) => {
+app.delete('/api/admin/debug/wipe', authenticateToken, isAdmin, async (req, res) => {
     try {
-        db.prepare('DELETE FROM consumption_log').run();
+        await db.query('DELETE FROM consumption_log');
         res.json({ success: true, message: 'All consumption data wiped' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to wipe data' });
@@ -629,37 +613,33 @@ app.post('/api/admin/export', authenticateToken, isAdmin, async (req, res) => {
     }
 });
 
-app.get('/api/leaderboard', authenticateToken, (req, res) => {
+app.get('/api/leaderboard', authenticateToken, async (req, res) => {
     const { start, end } = getMonthBoundaries();
     const category = req.query.category as string;
 
     let query = `
         SELECT u.username, SUM(c_log.quantity) as total_drinks
         FROM consumption_log c_log
-                 JOIN users u ON c_log.user_id = u.id
-                 JOIN drinks d ON c_log.drink_id = d.id
-        WHERE c_log.created_at >= ? AND c_log.created_at < ? AND u.role != 'admin'
+        JOIN users u ON c_log.user_id = u.id
+        JOIN drinks d ON c_log.drink_id = d.id
+        WHERE c_log.created_at >= $1 AND c_log.created_at < $2 AND u.role != 'admin'
     `;
     const params: any[] = [start, end];
 
     if (category && category !== 'All') {
-        query += ` AND d.category = ?`;
         params.push(category);
+        query += ` AND d.category = $${params.length}`;
     }
 
-    query += `
-        GROUP BY u.username
-        ORDER BY total_drinks DESC
-        LIMIT 10
-    `;
+    query += ` GROUP BY u.username ORDER BY total_drinks DESC LIMIT 10`;
 
-    const ranking = db.prepare(query).all(...params);
-    res.json(ranking);
+    const { rows } = await db.query(query, params);
+    res.json(rows);
 });
 
-app.get('/api/admin/tallies', authenticateToken, isAdmin, (req, res) => {
-    const booked = generateAdminData(0, 0);
-    const paid = generateAdminData(0, 1);
+app.get('/api/admin/tallies', authenticateToken, isAdmin, async (req, res) => {
+    const booked = await generateAdminData(0, false);
+    const paid = await generateAdminData(0, true);
 
     const totalBookedValue = booked.reduce((acc, user) => acc + user.totalSpent, 0);
     const totalPaidValue = paid.reduce((acc, user) => acc + user.totalSpent, 0);
@@ -667,79 +647,83 @@ app.get('/api/admin/tallies', authenticateToken, isAdmin, (req, res) => {
     res.json({ booked, paid, totalBookedValue, totalPaidValue });
 });
 
-app.get('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
-    const users = db.prepare('SELECT id, username, role FROM users').all();
-    res.json(users);
+app.get('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
+    const { rows } = await db.query('SELECT id, username, role FROM users');
+    res.json(rows);
 });
 
-// Settings endpoints
-app.get('/api/settings/public', (req, res) => {
-    const paypalSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('PAYPAL_USERNAME') as {value: string};
-    const weroSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('WERO_USERNAME') as {value: string};
-    res.json({
-        paypal_username: paypalSetting ? paypalSetting.value : (process.env.VITE_PAYPAL_USERNAME || ''),
-        wero_username: weroSetting ? weroSetting.value : ''
-    });
+// ==========================================
+// 6. SETTINGS & ACHIEVEMENTS
+// ==========================================
+
+app.get('/api/settings/public', async (req, res) => {
+    const paypalUsername = await getSetting('PAYPAL_USERNAME', process.env.VITE_PAYPAL_USERNAME || '');
+    const weroUsername = await getSetting('WERO_USERNAME', '');
+    res.json({ paypal_username: paypalUsername, wero_username: weroUsername });
 });
 
-app.get('/api/admin/settings', authenticateToken, isAdmin, (req, res) => {
-    const settings = db.prepare('SELECT * FROM settings').all();
-    res.json(settings);
+app.get('/api/admin/settings', authenticateToken, isAdmin, async (req, res) => {
+    const { rows } = await db.query('SELECT * FROM settings');
+    res.json(rows);
 });
 
-app.put('/api/admin/settings', authenticateToken, isAdmin, (req, res) => {
+app.put('/api/admin/settings', authenticateToken, isAdmin, async (req, res) => {
     const { key, value } = req.body;
-    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+    await db.query(
+        'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+        [key, value]
+    );
     res.json({ success: true });
 });
 
-// Achievements admin endpoints
-app.get('/api/admin/achievements', authenticateToken, isAdmin, (req, res) => {
-    const achievements = db.prepare('SELECT * FROM achievements').all();
-    res.json(achievements);
+app.get('/api/admin/achievements', authenticateToken, isAdmin, async (req, res) => {
+    const { rows } = await db.query('SELECT * FROM achievements');
+    res.json(rows);
 });
 
-app.post('/api/admin/achievements', authenticateToken, isAdmin, (req, res) => {
+app.post('/api/admin/achievements', authenticateToken, isAdmin, async (req, res) => {
     const { name, description, icon, condition_type, condition_value, condition_target } = req.body;
     try {
-        const result = db.prepare('INSERT INTO achievements (name, description, icon, condition_type, condition_value, condition_target) VALUES (?, ?, ?, ?, ?, ?)').run(name, description, icon, condition_type, condition_value, condition_target || null);
-        res.json({ success: true, id: result.lastInsertRowid });
+        const { rows } = await db.query(
+            'INSERT INTO achievements (name, description, icon, condition_type, condition_value, condition_target) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+            [name, description, icon, condition_type, condition_value, condition_target || null]
+        );
+        res.json({ success: true, id: rows[0].id });
     } catch (err) {
         res.status(500).json({ error: 'Failed to create achievement' });
     }
 });
 
-app.put('/api/admin/achievements/:id', authenticateToken, isAdmin, (req, res) => {
+app.put('/api/admin/achievements/:id', authenticateToken, isAdmin, async (req, res) => {
     const { id } = req.params;
     const { name, description, icon, condition_type, condition_value, condition_target } = req.body;
     try {
-        db.prepare('UPDATE achievements SET name = ?, description = ?, icon = ?, condition_type = ?, condition_value = ?, condition_target = ? WHERE id = ?').run(name, description, icon, condition_type, condition_value, condition_target || null, Number(id));
+        await db.query(
+            'UPDATE achievements SET name = $1, description = $2, icon = $3, condition_type = $4, condition_value = $5, condition_target = $6 WHERE id = $7',
+            [name, description, icon, condition_type, condition_value, condition_target || null, Number(id)]
+        );
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to update achievement' });
     }
 });
 
-app.delete('/api/admin/achievements/:id', authenticateToken, isAdmin, (req, res) => {
-    const { id } = req.params;
+app.delete('/api/admin/achievements/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
-        db.prepare('DELETE FROM achievements WHERE id = ?').run(Number(id));
-        db.prepare('DELETE FROM user_achievements WHERE achievement_id = ?').run(Number(id));
+        await db.query('DELETE FROM achievements WHERE id = $1', [Number(req.params.id)]);
+        await db.query('DELETE FROM user_achievements WHERE achievement_id = $1', [Number(req.params.id)]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to delete achievement' });
     }
 });
 
-// User achievement endpoint
-app.get('/api/users/achievements', authenticateToken, (req, res) => {
+app.get('/api/users/achievements', authenticateToken, async (req, res) => {
     const userId = (req as any).user.id;
-    const achievements = db.prepare('SELECT * FROM achievements').all() as any[];
-    const unlocked = db.prepare('SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = ?').all(userId) as any[];
+    const { rows: achievements } = await db.query('SELECT * FROM achievements');
+    const { rows: unlocked } = await db.query('SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = $1', [userId]);
 
-    // Map unlocked info
     const unlockedMap = new Map(unlocked.map(u => [u.achievement_id, u.unlocked_at]));
-
     const result = achievements.map(ach => ({
         ...ach,
         unlocked: unlockedMap.has(ach.id),
@@ -749,26 +733,27 @@ app.get('/api/users/achievements', authenticateToken, (req, res) => {
     res.json(result);
 });
 
-app.put('/api/admin/users/:id/password', authenticateToken, isAdmin, (req, res) => {
-    const { id } = req.params;
-    const { newPassword } = req.body;
+app.put('/api/admin/users/:id/password', authenticateToken, isAdmin, async (req, res) => {
     try {
-        const hash = bcrypt.hashSync(newPassword, 10);
-        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, Number(id));
+        const hash = bcrypt.hashSync(req.body.newPassword, 10);
+        await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, Number(req.params.id)]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to update password' });
     }
 });
 
-app.post('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
+app.post('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
     const { username, password, role } = req.body;
     try {
         const hash = bcrypt.hashSync(password, 10);
-        const result = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run(username, hash, role || 'user');
-        res.json({ success: true, id: result.lastInsertRowid });
-    } catch (err) {
-        if ((err as Error).message.includes('UNIQUE constraint failed')) {
+        const { rows } = await db.query(
+            'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
+            [username, hash, role || 'user']
+        );
+        res.json({ success: true, id: rows[0].id });
+    } catch (err: any) {
+        if (err.code === '23505') {
             res.status(400).json({ error: 'Username already exists' });
         } else {
             res.status(500).json({ error: 'Failed to create user' });
@@ -776,20 +761,22 @@ app.post('/api/admin/users', authenticateToken, isAdmin, (req, res) => {
     }
 });
 
-app.delete('/api/admin/users/:id', authenticateToken, isAdmin, (req, res) => {
-    const { id } = req.params;
+app.delete('/api/admin/users/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
-        db.prepare('DELETE FROM users WHERE id = ?').run(Number(id));
+        await db.query('DELETE FROM users WHERE id = $1', [Number(req.params.id)]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to delete user' });
     }
 });
 
+// ==========================================
+// 7. CRON & SERVER START
+// ==========================================
+
 cron.schedule('0 0 1 * *', async () => {
     console.log('Running monthly tally report...');
     try {
-        // Send report for the previous month (-1) since we are at the 1st of the new month
         await sendReportEmail(-1);
     } catch (error) {
         console.error('Monthly CRON job failed:', error);
@@ -797,6 +784,10 @@ cron.schedule('0 0 1 * *', async () => {
 });
 
 async function startServer() {
+    // 1. Warte, bis die Datenbank-Tabellen fertig geladen sind
+    await initDb();
+
+    // 2. Lade das Frontend / Vite
     if (process.env.NODE_ENV !== 'production') {
         const vite = await createViteServer({
             server: { middlewareMode: true },
@@ -810,16 +801,13 @@ async function startServer() {
         });
     }
 
+    // 3. Starte den Server
     const keyPath = path.join(process.cwd(), 'server.key');
     const certPath = path.join(process.cwd(), 'server.cert');
-
     const useHttps = fs.existsSync(keyPath) && fs.existsSync(certPath);
 
     if (useHttps) {
-        const httpsOptions = {
-            key: fs.readFileSync(keyPath),
-            cert: fs.readFileSync(certPath)
-        };
+        const httpsOptions = { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
         const server = https.createServer(httpsOptions, app);
         server.listen(PORT, '0.0.0.0', () => {
             console.log(`HTTPS Server running at https://0.0.0.0:${PORT}`);

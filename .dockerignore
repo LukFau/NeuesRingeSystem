@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.idea
+.git
+.gitignore
+README.md
+simulate_scan_*.ps1
+# WICHTIG: Die lokale Datenbank nicht mit in das Image packen, da sie sonst bei jedem Deploy überschrieben wird!
+beverage.db
+beverage.db-shm
+beverage.db-wal
