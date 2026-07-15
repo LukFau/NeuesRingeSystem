@@ -16,6 +16,8 @@ RUN npm run build
 
 # Port definieren (wird von Cloud Run überschrieben, aber gut als Standard)
 ENV PORT=8080
+ENV NODE_ENV=production
+
 EXPOSE 8080
 
 # Das ist der CMD-Befehl, der exakt auf dein Setup passt!
