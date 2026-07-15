@@ -4,13 +4,15 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import { createServer as createViteServer } from 'vite';
-import { Pool } from 'pg'; // PostgreSQL Treiber
+import { Pool, types } from 'pg'; // PostgreSQL Treiber
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { EventEmitter } from 'events';
 
+
+types.setTypeParser(1700, (val) => parseFloat(val));
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000');
 const scanEmitter = new EventEmitter();
