@@ -17,6 +17,9 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      allowedHosts: [
+          'bevtally-app-986618385853.europe-west3.run.app' // Füge deine URL hier ein
+      ]
     },
   };
 });
