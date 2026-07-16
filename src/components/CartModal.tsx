@@ -2,6 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import * as motion from 'motion/react-client';
 import { ScanEvent } from '../types';
 import { AuthContext } from '../App';
+import { useToast } from './Toast';
 import QRCode from 'react-qr-code';
 
 interface Props {
@@ -11,21 +12,29 @@ interface Props {
 
 export default function CartModal({ cart, setCart }: Props) {
     const { token, user, login, logout } = useContext(AuthContext);
+    const toast = useToast();
     const [step, setStep] = useState<'identity' | 'cart' | 'qr'>('identity');
-    const [tempMode, setTempMode] = useState<'user' | 'guest' | null>(null);
+    const [tempMode, setTempMode] = useState<'user' | 'guest' | 'cb' | null>(null);
     const [tempToken, setTempToken] = useState<string | null>(null);
     const [modalUsername, setModalUsername] = useState('');
     const [modalPassword, setModalPassword] = useState('');
     const [authError, setAuthError] = useState('');
+    const [responsiblePerson, setResponsiblePerson] = useState('');
 
     const [paypalUser, setPaypalUser] = useState(import.meta.env.VITE_PAYPAL_USERNAME || 'exampleuser');
     const [weroUser, setWeroUser] = useState('');
+    const [allDrinks, setAllDrinks] = useState<any[]>([]);
+    const [showDrinkSelector, setShowDrinkSelector] = useState(false);
 
     useEffect(() => {
         fetch('/api/settings/public').then(r => r.json()).then(data => {
             if (data.paypal_username) setPaypalUser(data.paypal_username);
             if (data.wero_username) setWeroUser(data.wero_username);
-        }).catch(() => {});
+        }).catch(() => { });
+
+        fetch('/api/drinks').then(r => r.json()).then(data => {
+            setAllDrinks(data.filter((d: any) => d.is_active));
+        }).catch(() => { });
     }, []);
 
     // Group items by id
@@ -85,25 +94,56 @@ export default function CartModal({ cart, setCart }: Props) {
         }
     };
 
-    const clearAll = () => setCart([]);
+    const clearAll = () => {
+        setCart([]);
+        setResponsiblePerson('');
+    };
 
 
     const handleBuchen = async () => {
         if (!tempToken) return;
         try {
-            const promises = items.map(item =>
-                fetch('/api/tallies', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${tempToken}`
-                    },
-                    body: JSON.stringify({ drinkId: item.id, quantity: item.quantity })
-                })
+            const responses = await Promise.all(
+                items.map(item =>
+                    fetch('/api/tallies', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${tempToken}`
+                        },
+                        body: JSON.stringify({ drinkId: item.id, quantity: item.quantity })
+                    }).then(r => r.json())
+                )
             );
-            await Promise.all(promises);
+            const logIds = responses.map(r => r.logId).filter(Boolean) as number[];
             window.dispatchEvent(new Event('refresh-tallies'));
             clearAll();
+
+            const itemSummary = items.map(i => `${i.quantity}x ${i.name}`).join(', ');
+            toast.success(`Booked: ${itemSummary}`, logIds.length > 0 ? {
+                label: 'Undo',
+                onClick: async () => {
+                    try {
+                        const responses = await Promise.all(logIds.map(id =>
+                            fetch(`/api/tallies/${id}`, {
+                                method: 'DELETE',
+                                headers: { 'Authorization': `Bearer ${tempToken}` }
+                            })
+                        ));
+                        
+                        const failedResponse = responses.find(r => !r.ok);
+                        if (failedResponse) {
+                            const errData = await failedResponse.json().catch(() => ({}));
+                            toast.error(errData.error || 'Failed to undo booking');
+                        } else {
+                            window.dispatchEvent(new Event('refresh-tallies'));
+                            toast.info('Booking undone successfully');
+                        }
+                    } catch {
+                        toast.error('Failed to undo — connection error');
+                    }
+                }
+            } : undefined);
 
             // Only log out if it was a physical scan (not a manual Quick Book)
             const isQuickBook = cart.every(i => i.scannerId === 'manual');
@@ -112,6 +152,7 @@ export default function CartModal({ cart, setCart }: Props) {
             }
         } catch (err) {
             console.error(err);
+            toast.error('Failed to book drinks');
         }
     };
 
@@ -126,8 +167,7 @@ export default function CartModal({ cart, setCart }: Props) {
                 window.open(`https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=${paypalUser}&item_name=Drinks&amount=${totalPricePaypal}&currency_code=EUR`, '_blank');
                 break;
             case 'wero':
-                // Wero typically uses a banking scheme deep link or a generic Wero link if supported, we can fallback to text copy/clipboard if we don't have deep link, but since we are trying payment solutions, providing standard scheme or informative alert if not deep linking.
-                alert(`Please send €${totalPricePaypal} via Wero to: ${weroUser}`);
+                toast.info(`Please send €${totalPricePaypal} via Wero to: ${weroUser}`);
                 break;
         }
     };
@@ -150,6 +190,32 @@ export default function CartModal({ cart, setCart }: Props) {
             clearAll();
         } catch (err) {
             console.error(err);
+        }
+    };
+
+    const handleCbCheckout = async () => {
+        try {
+            const promises = items.map(item =>
+                fetch('/api/cb-checkout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ drinkId: item.id, quantity: item.quantity, responsible: responsiblePerson })
+                })
+            );
+            const responses = await Promise.all(promises);
+            const failedResponse = responses.find(r => !r.ok);
+            if (failedResponse) {
+                const errData = await failedResponse.json().catch(() => ({}));
+                toast.error(errData.error || 'Failed to book drinks on CB');
+                return;
+            }
+
+            window.dispatchEvent(new Event('refresh-tallies'));
+            clearAll();
+            toast.success(`Booked on CB: ${items.map(i => `${i.quantity}x ${i.name}`).join(', ')}`);
+        } catch (err) {
+            console.error(err);
+            toast.error('Failed to book drinks on CB');
         }
     };
 
@@ -189,7 +255,11 @@ export default function CartModal({ cart, setCart }: Props) {
             const remainingItems = prev.filter(p => (p as any).id !== id);
             const targetItems = prev.filter(p => (p as any).id === id);
             if (delta > 0) {
-                // Need to add item
+                const currentItem = targetItems[0] as any;
+                if (currentItem && targetItems.length >= currentItem.stock) {
+                    toast.error(`Cannot add more: only ${currentItem.stock} bottles of ${currentItem.name} in stock!`);
+                    return prev;
+                }
                 return [...prev, targetItems[0]];
             } else {
                 // Need to remove one item
@@ -257,6 +327,12 @@ export default function CartModal({ cart, setCart }: Props) {
                             >
                                 Continue as Guest
                             </button>
+                            <button
+                                onClick={() => { setTempMode('cb'); setStep('cart'); }}
+                                className="w-full py-4 bg-[#0F1115] border border-[#2A2D35] rounded-xl text-white font-bold uppercase tracking-widest text-sm hover:bg-[#15181E] transition-colors"
+                            >
+                                Continue as CB
+                            </button>
                             <button onClick={clearAll} className="w-full text-zinc-500 hover:text-white py-3 font-bold uppercase tracking-widest text-[10px] transition-colors pt-2">
                                 Cancel
                             </button>
@@ -293,17 +369,52 @@ export default function CartModal({ cart, setCart }: Props) {
                             })()}
                         </div>
 
+                        {cart.every(i => i.scannerId === 'manual') && (
+                            showDrinkSelector ? (
+                                <div className="w-full bg-[#0F1115] border border-[#2A2D35] p-4 rounded-2xl mb-6 space-y-3">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Select Drink to Add</span>
+                                        <button onClick={() => setShowDrinkSelector(false)} className="text-zinc-500 hover:text-white text-xs font-mono uppercase">Done</button>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                                        {allDrinks.map(drink => (
+                                            <button
+                                                key={drink.id}
+                                                onClick={() => {
+                                                    setCart(prev => {
+                                                        const count = prev.filter(c => (c as any).id === drink.id).length;
+                                                        if (count >= drink.stock) {
+                                                            toast.error(`Cannot add more: only ${drink.stock} bottles of ${drink.name} in stock!`);
+                                                            return prev;
+                                                        }
+                                                        return [...prev, { ...drink, type: 'known', scannerId: 'manual' }];
+                                                    });
+                                                }}
+                                                className="bg-[#1A1D24] border border-[#2A2D35] hover:border-amber-500/50 hover:bg-[#15181E] rounded-xl p-2 text-center text-xs text-white font-medium truncate transition"
+                                            >
+                                                {drink.name} (+€{drink.price.toFixed(2)})
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => setShowDrinkSelector(true)}
+                                    className="w-full mb-6 py-2.5 bg-[#0F1115] border border-[#2A2D35] hover:border-amber-500/50 hover:text-amber-500 rounded-xl text-zinc-400 text-xs font-bold uppercase tracking-widest transition-colors"
+                                >
+                                    + Add other drinks
+                                </button>
+                            )
+                        )}
+
                         <div className="w-full space-y-3">
-                            {tempMode === 'user' ? (
+                            {tempMode === 'user' && (
                                 <>
                                     <button onClick={handleBuchen} className="w-full py-5 bg-amber-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:bg-amber-400 transition-colors">
                                         Buchen (€{totalPrice})
                                     </button>
                                     <button onClick={() => handlePaypalCheckout('paypal_me')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
-                                        PayPal.me
-                                    </button>
-                                    <button onClick={() => handlePaypalCheckout('paypal_webscr')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
-                                        PayPal Checkout (Mobile)
+                                        PayPal
                                     </button>
                                     {weroUser && (
                                         <button onClick={() => handlePaypalCheckout('wero')} className="w-full py-4 bg-purple-600 text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-purple-500 transition-colors">
@@ -311,13 +422,43 @@ export default function CartModal({ cart, setCart }: Props) {
                                         </button>
                                     )}
                                 </>
-                            ) : (
+                            )}
+                            {tempMode === 'cb' && (() => {
+                                const hasInvalidColors = items.some(item => item.color_name !== 'Schwarz' && item.color_name !== 'Blau');
+                                return (
+                                    <div className="w-full space-y-4">
+                                        <div className="w-full">
+                                            <label className="block text-[10px] text-zinc-500 uppercase tracking-widest font-black mb-1.5 text-center">
+                                                Person Responsible
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={responsiblePerson}
+                                                onChange={e => setResponsiblePerson(e.target.value)}
+                                                className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-xl px-4 py-3 text-white text-center text-sm font-mono focus:outline-none focus:border-amber-500"
+                                                placeholder="Responsible Person Name"
+                                                required
+                                            />
+                                        </div>
+                                        {hasInvalidColors && (
+                                            <div className="text-red-400 text-xs font-mono text-center px-4 bg-red-500/10 py-3 rounded-xl border border-red-500/20">
+                                                Warning: CB is only allowed to book Black or Blue ring drinks.
+                                            </div>
+                                        )}
+                                        <button 
+                                            onClick={handleCbCheckout} 
+                                            disabled={hasInvalidColors || !responsiblePerson.trim()} 
+                                            className="w-full py-5 bg-amber-500 text-black text-xl font-black rounded-xl uppercase tracking-tighter shadow-[0_0_30px_rgba(245,158,11,0.2)] hover:bg-amber-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            Buchen (€{totalPrice})
+                                        </button>
+                                    </div>
+                                );
+                            })()}
+                            {tempMode === 'guest' && (
                                 <>
                                     <button onClick={() => handleGuestCheckout('paypal_me')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
-                                        Pay with PayPal.me
-                                    </button>
-                                    <button onClick={() => handleGuestCheckout('paypal_webscr')} className="w-full py-4 bg-[#0070BA] text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-[#003087] transition-colors">
-                                        PayPal Checkout (Mobile)
+                                        Pay with PayPal
                                     </button>
                                     {weroUser && (
                                         <button onClick={() => handleGuestCheckout('wero')} className="w-full py-4 bg-purple-600 text-white text-lg font-black rounded-xl uppercase tracking-tighter hover:bg-purple-500 transition-colors">

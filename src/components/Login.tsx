@@ -8,6 +8,7 @@ export default function Login() {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [avatar, setAvatar] = useState('🍺');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -18,7 +19,7 @@ export default function Login() {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, ...(isRegister ? { avatar } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Authentication failed');
@@ -59,10 +60,28 @@ export default function Login() {
               onChange={e => setPassword(e.target.value)}
               className="w-full bg-[#0F1115] border border-[#2A2D35] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all font-mono"
               placeholder="1234"
-              required
+              required={username.toUpperCase() !== 'CB'}
             />
           </div>
           
+          {isRegister && (
+            <div>
+              <label className="block text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-2">Pick your Avatar <span className="text-red-500 lowercase">(Cannot be changed later!)</span></label>
+              <div className="flex flex-wrap gap-2">
+                {['🍺', '🍻', '🍷', '🥂', '🍹', '🍸', '🥃', '🍾', '🧊', '🧉', '🥛', '☕', '😎', '🤠', '👽', '👻', '🤡', '🦁', '🦊', '🐸'].map(emoji => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => setAvatar(emoji)}
+                    className={`w-8 h-8 rounded-full text-base flex items-center justify-center transition-all ${avatar === emoji ? 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-[#0F1115] hover:bg-[#2A2D35]'}`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {error && <div className="text-red-400 text-sm font-mono">{error}</div>}
           
           <button 

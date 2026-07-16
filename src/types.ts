@@ -1,7 +1,8 @@
 export interface User {
     id: number;
     username: string;
-    role: 'user' | 'admin';
+    role: 'user' | 'admin' | 'bierdax' | 'cb' | 'philister';
+    avatar?: string;
 }
 
 export interface Drink {
@@ -13,7 +14,10 @@ export interface Drink {
     price: number; // resolved from colors
     stock: number;
     min_stock: number;
+    critical_stock: number;
+    bottles_per_crate: number;
     is_active: boolean;
+    crate_price: number | null;
 }
 
 export interface Color {
@@ -29,6 +33,9 @@ export interface HistoryEvent {
     date: string;
     quantity: number;
     paid_via_paypal?: number;
+    is_crate?: boolean;
+    price_paid?: number;
+    responsible?: string;
 }
 
 export interface UserStats {
@@ -50,9 +57,12 @@ export type ScanEvent = {
     name: string;
     color_name: string;
     price: number;
+    stock: number;
     timestamp: string;
+    scannerId?: string;
 } | {
     type: 'unknown';
     barcode: string;
     timestamp: string;
+    scannerId?: string;
 };

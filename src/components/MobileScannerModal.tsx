@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import * as motion from 'motion/react-client';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { Camera, X } from 'lucide-react';
+import { Camera, X, Zap } from 'lucide-react';
 
 interface Props {
     onClose: () => void;
@@ -11,17 +11,38 @@ interface Props {
 export default function MobileScannerModal({ onClose, onScan }: Props) {
     const [error, setError] = useState<string>('');
     const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+    const [isTorchSupported, setIsTorchSupported] = useState<boolean>(false);
+    const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+    const scannerRef = useRef<Html5Qrcode | null>(null);
+
+    const toggleTorch = async () => {
+        const scanner = scannerRef.current;
+        if (!scanner || !scanner.isScanning) return;
+        try {
+            const capabilities = scanner.getRunningTrackCameraCapabilities();
+            const torchFeature = capabilities.torchFeature();
+            if (torchFeature.isSupported()) {
+                const targetState = !isTorchOn;
+                await torchFeature.apply(targetState);
+                setIsTorchOn(targetState);
+            }
+        } catch (err) {
+            console.error("Failed to toggle torch:", err);
+        }
+    };
 
     useEffect(() => {
         let isStopped = false;
-        let html5QrCode: Html5Qrcode | null = null;
+        let t1: any = null;
+        let t2: any = null;
 
         // This helper ensures we only call the callback once
         const handleScan = (decodedText: string) => {
             if (isStopped) return;
             isStopped = true;
-            if (html5QrCode && html5QrCode.isScanning) {
-                html5QrCode.stop().then(() => {
+            const currentScanner = scannerRef.current;
+            if (currentScanner && currentScanner.isScanning) {
+                currentScanner.stop().then(() => {
                     onScan(decodedText);
                     onClose();
                 }).catch(err => {
@@ -52,7 +73,8 @@ export default function MobileScannerModal({ onClose, onScan }: Props) {
 
                 if (isStopped) return;
 
-                html5QrCode = new Html5Qrcode("reader");
+                const html5QrCode = new Html5Qrcode("reader");
+                scannerRef.current = html5QrCode;
 
                 const config = {
                     fps: 10,
@@ -77,6 +99,24 @@ export default function MobileScannerModal({ onClose, onScan }: Props) {
                         // Ignore continuous parsing errors
                     }
                 );
+
+                const checkCapabilities = () => {
+                    if (isStopped || !html5QrCode.isScanning) return;
+                    try {
+                        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+                        const torchFeature = capabilities.torchFeature();
+                        if (torchFeature && torchFeature.isSupported()) {
+                            setIsTorchSupported(true);
+                            setIsTorchOn(torchFeature.value() === true);
+                        }
+                    } catch (e) {
+                        console.warn("Failed to check torch support:", e);
+                    }
+                };
+
+                checkCapabilities();
+                t1 = setTimeout(checkCapabilities, 500);
+                t2 = setTimeout(checkCapabilities, 1500);
             } catch (err: any) {
                 if (!isStopped) {
                     setError(`Failed to start camera: ${err.message || 'Unknown error'}`);
@@ -89,10 +129,15 @@ export default function MobileScannerModal({ onClose, onScan }: Props) {
 
         return () => {
             isStopped = true;
-            if (html5QrCode && html5QrCode.isScanning) {
-                html5QrCode.stop().catch(console.error);
+            if (t1) clearTimeout(t1);
+            if (t2) clearTimeout(t2);
+            const currentScanner = scannerRef.current;
+            if (currentScanner && currentScanner.isScanning) {
+                currentScanner.stop().catch(console.error);
             }
-            // Cleanup html5QrCode container if needed
+            scannerRef.current = null;
+            setIsTorchSupported(false);
+            setIsTorchOn(false);
         };
     }, [onClose, onScan]);
 
@@ -150,11 +195,26 @@ export default function MobileScannerModal({ onClose, onScan }: Props) {
                         )}
 
                         {hasPermission === true && (
-                            <div className="absolute inset-0 pointer-events-none flex flex-col justify-center items-center">
-                                <div className="mt-40 text-[10px] text-zinc-400 font-mono bg-black/50 px-3 py-1 rounded-full uppercase tracking-widest backdrop-blur-sm shadow-md">
-                                    Align barcode in frame
+                            <>
+                                <div className="absolute inset-0 pointer-events-none flex flex-col justify-center items-center">
+                                    <div className="mt-40 text-[10px] text-zinc-400 font-mono bg-black/50 px-3 py-1 rounded-full uppercase tracking-widest backdrop-blur-sm shadow-md">
+                                        Align barcode in frame
+                                    </div>
                                 </div>
-                            </div>
+
+                                {isTorchSupported && (
+                                    <button
+                                        onClick={toggleTorch}
+                                        className={`absolute bottom-4 right-4 z-20 w-10 h-10 rounded-full flex items-center justify-center border transition-all ${isTorchOn
+                                            ? 'bg-amber-500 border-amber-400 text-[#0F1115] shadow-lg shadow-amber-500/20 hover:bg-amber-400'
+                                            : 'bg-[#1A1D24]/80 border-[#2A2D35] text-zinc-400 hover:text-white hover:bg-[#2A2D35]'
+                                            }`}
+                                        title={isTorchOn ? "Turn flash off" : "Turn flash on"}
+                                    >
+                                        <Zap className="w-5 h-5 fill-current" />
+                                    </button>
+                                )}
+                            </>
                         )}
                     </div>
                 )}
