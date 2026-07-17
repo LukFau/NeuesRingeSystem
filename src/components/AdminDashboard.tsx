@@ -1076,7 +1076,7 @@ export default function AdminDashboard() {
                         </div>
                     </div>
                     <div className="space-y-3">
-                        {visibleFilteredUsers.map(u => (
+                        {filteredUsers.map(u => (
                             <div key={u.id} className="flex flex-col md:flex-row md:justify-between md:items-center p-4 bg-[#0F1115] border border-[#2A2D35] rounded-lg text-white gap-3">
                                 <div className="font-medium flex items-center gap-2">
                                     <div className="flex items-center gap-2">
